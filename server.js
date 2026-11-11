@@ -236,7 +236,7 @@ function galleryHtml(items, flows) {
     + '  .key-err { display: none; color: #dc2626; font-size: 13px; margin-top: 8px; }\n'
     + '  .key-err.on { display: block; }\n'
     + '  #fpBody { max-height: 52vh; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.7; }\n'
-    + '  #pBody { max-height: 60vh; column-count: 2; column-width: 300px; column-gap: 28px; }\n'
+    + '  #pBody { max-height: none; column-count: 2; column-width: 300px; column-gap: 28px; }\n'
     + '  @media (max-width: 640px) { #pBody { column-count: 1; } }\n'
     + '  .pcard { cursor: pointer; }\n'
     + '  .empty { margin: 60px auto; padding: 0 24px; text-align: center; }\n'
