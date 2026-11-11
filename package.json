@@ -1,0 +1,1 @@
+{"description":"天涯画廊：管理站生图自动推送的展示站（阿可 / Cloady 版，零依赖 Node）","engines":{"node":">=20"},"main":"server.js","name":"tianya-gallery","scripts":{"start":"node server.js"},"version":"1.0.0"}
