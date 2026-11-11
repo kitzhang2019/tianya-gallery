@@ -155,7 +155,7 @@ function galleryHtml(items, flows) {
   const itemsJson = JSON.stringify(items).replace(/</g, '\\u003c');
   return '<!DOCTYPE html>\n'
     + '<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">\n'
-    + '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&display=swap" rel="stylesheet">\n'
+
     + '<title>天涯画廊</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><style>\n'
     + '  * { box-sizing: border-box; margin: 0; padding: 0; }\n'
     + '  html { scroll-behavior: smooth; }\n'
@@ -166,6 +166,7 @@ function galleryHtml(items, flows) {
     + '  .nav { padding-top: 40px; margin-bottom: 30px; text-align: center; }\n'
     + '  .nav-inner { max-width: 1400px; margin: 0 auto; padding: 0 24px; text-align: center; }\n'
     + '  .brand { display: block; text-decoration: none; }\n'
+    + '  @font-face { font-family: "Ma Shan Zheng"; src: url("/fonts/mashanzheng-title.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }\n'
     + '  .brand .name { font-family: "Ma Shan Zheng", "STKaiti", "KaiTi", "Kaiti SC", serif; font-size: 56px; font-weight: 400; letter-spacing: 14px; text-indent: 14px; color: #212121; }\n'
     + '  .tabs { display: flex; justify-content: center; gap: 0; margin-top: 20px; padding-top: 20px; background: transparent; }\n'
     + '  .tab { border: none; background: transparent; color: #999999; font-size: 15px; font-weight: 400; padding: 0 10px; cursor: pointer; letter-spacing: 1px; white-space: nowrap; }\n'
@@ -734,6 +735,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/favicon.svg') {
       const f = path.join(__dirname, 'favicon.svg');
       res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+      return res.end(fs.readFileSync(f));
+    }
+    if (req.method === 'GET' && p.startsWith('/fonts/')) {
+      const name = path.basename(p);
+      if (!name.endsWith('.woff2')) return sendJson(res, 404, { ok: false, error: 'not found' });
+      const f = path.join(__dirname, 'fonts', name);
+      if (!fs.existsSync(f)) return sendJson(res, 404, { ok: false, error: 'not found' });
+      res.writeHead(200, { 'Content-Type': 'font/woff2', 'Cache-Control': 'public, max-age=86400' });
       return res.end(fs.readFileSync(f));
     }
     if (req.method === 'GET' && p.startsWith('/images/')) {
