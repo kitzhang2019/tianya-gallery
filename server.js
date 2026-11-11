@@ -128,7 +128,7 @@ function galleryHtml(items, flows) {
       + '<button class="copy-btn" data-idx="' + i + '">复制提示词</button></article>';
   }).join('\n');
   const flowCards = flows.map(function (fl) {
-    return '<article class="fcard"><div class="ftags"><span class="model">' + esc(fl.model || 'ComfyUI') + '</span>'
+    return '<article class="fcard">' + (fl.id ? '<button class="flow-del" data-fid="' + esc(fl.id) + '" title="删除这个工作流">×</button>' : '') + '<div class="ftags"><span class="model">' + esc(fl.model || 'ComfyUI') + '</span>'
       + (fl.author ? '<span class="author">' + esc(fl.author) + '</span>' : '') + '<span class="date">' + esc(String(fl.created_at || '').slice(0, 10)) + '</span></div>'
       + '<div class="fname">' + esc(fl.name || '未命名工作流') + '</div>'
       + (fl.description ? '<div class="fdesc">' + esc(fl.description) + '</div>' : '')
@@ -218,6 +218,11 @@ function galleryHtml(items, flows) {
     + '  .copy-flow, .copy-params { background: #f5f5f4; color: #44403c; border: 1px solid #e7e5e4; }\n'
     + '  .manage-banner { display: none; margin: 18px 0 0; background: #fef3c7; border: 1px solid #fcd34d; color: #92400e; border-radius: 12px; padding: 12px 16px; font-size: 13px; line-height: 1.7; }\n'
     + '  body.manage .manage-banner { display: block; }\n'
+    + '  .fcard { position: relative; }\n'
+    + '  .flow-del { display: none; position: absolute; top: 10px; right: 10px; width: 26px; height: 26px; border-radius: 50%; border: none; background: rgba(28,25,23,.85); color: #fff; font-size: 16px; line-height: 1; cursor: pointer; z-index: 2; }\n'
+    + '  body.manage .flow-del { display: block; }\n'
+    + '  .key-err { display: none; color: #dc2626; font-size: 13px; margin-top: 8px; }\n'
+    + '  .key-err.on { display: block; }\n'
     + '  .empty { margin: 60px auto; padding: 0 24px; text-align: center; }\n'
     + '  .empty.small { margin: 10px auto 40px; }\n'
     + '  .empty .glyph { font-size: 44px; margin-bottom: 14px; }\n'
@@ -305,7 +310,13 @@ function galleryHtml(items, flows) {
     + '    <div class="m-desc"><div class="m-desc-head"><span>提示词，可直接放进生图</span><button id="mCopy2">复制</button></div><div class="m-desc-body" id="mPrompt"></div></div>\n'
     + '    <div class="m-hint">← → 换一张&nbsp;&nbsp;↑ ↓ 换一张&nbsp;&nbsp;Esc 关闭</div>\n'
     + '  </div></div></div>\n'
-    + '<div class="form-overlay" id="flowForm"><div class="form-box"><h2>上传工作流</h2>\n'
+    + '<div class="form-overlay" id="keyModal"><div class="form-box"><h2>管理密钥</h2>\n'
++ '  <p class="hint" style="margin-bottom:14px">输入推送密钥（与管理站推送密钥相同），进入管理后可删除图片和工作流。</p>\n'
++ '  <label>管理密钥<input type="password" id="keyInput" placeholder="输入管理密钥" autocomplete="off"></label>\n'
++ '  <div class="key-err" id="keyErr">密钥不对，请重试。</div>\n'
++ '  <div class="form-actions"><button type="button" class="cancel" id="keyCancel">取消</button><button type="button" class="submit" id="keySubmit">进入管理</button></div>\n'
++ '</div></div>\n'
++ '<div class="form-overlay" id="flowForm"><div class="form-box"><h2>上传工作流</h2>\n'
     + '  <form id="flowUploadForm"><label>工作流名称 *<input type="text" name="name" required maxlength="80" placeholder="例如：Qwen 人像写真工作流"></label>\n'
     + '  <label>适用模型<select name="model"><option>MOSS-Image</option><option>Qwen Image 2.1 Turbo</option><option>Krea2</option><option>其他</option></select></label>\n'
     + '  <label>分享者（可选）<input type="text" name="author" maxlength="40" placeholder="留空为匿名"></label>\n'
@@ -338,28 +349,47 @@ function galleryHtml(items, flows) {
     + '  var tab = document.querySelector(\'.tab[data-tab="manage"]\');\n'
     + '  if (tab) tab.textContent = on ? "退出管理" : "管理";\n'
     + '}\n'
-    + 'function askKey(cb) {\n'
-    + '  var k = prompt("请输入管理密钥（与推送密钥相同）：");\n'
-    + '  if (!k) return;\n'
-    + '  apiPost("/api/manage-check", { key: k }).then(function (r) {\n'
-    + '    if (r && r.ok) { ADMIN_KEY = k; sessionStorage.setItem("gallery_admin_key", k); setManage(true); if (cb) cb(); }\n'
-    + '    else alert("密钥不对，请重试。");\n'
-    + '  }).catch(function () { alert("请求失败，请检查网络后重试。"); });\n'
+    + 'function askKey(cb, onCancel) {\n'
+    + '  var modal = document.getElementById("keyModal");\n'
+    + '  var input = document.getElementById("keyInput");\n'
+    + '  var err = document.getElementById("keyErr");\n'
+    + '  err.classList.remove("on"); input.value = "";\n'
+    + '  modal.classList.add("open");\n'
+    + '  setTimeout(function () { input.focus(); }, 60);\n'
+    + '  function close(cancelled) {\n'
+    + '    modal.classList.remove("open");\n'
+    + '    document.getElementById("keySubmit").onclick = null;\n'
+    + '    document.getElementById("keyCancel").onclick = null;\n'
+    + '    input.onkeydown = null; modal.onclick = null;\n'
+    + '    if (cancelled && onCancel) onCancel();\n'
+    + '  }\n'
+    + '  document.getElementById("keySubmit").onclick = function () {\n'
+    + '    var k = input.value.trim();\n'
+    + '    if (!k) { err.textContent = "请输入管理密钥。"; err.classList.add("on"); return; }\n'
+    + '    apiPost("/api/manage-check", { key: k }).then(function (r) {\n'
+    + '      if (r && r.ok) { ADMIN_KEY = k; sessionStorage.setItem("gallery_admin_key", k); setManage(true); close(false); if (cb) cb(); }\n'
+    + '      else { err.textContent = "密钥不对，请重试。"; err.classList.add("on"); input.select(); }\n'
+    + '    }).catch(function () { err.textContent = "请求失败，请检查网络后重试。"; err.classList.add("on"); });\n'
+    + '  };\n'
+    + '  document.getElementById("keyCancel").onclick = function () { close(true); };\n'
+    + '  modal.onclick = function (e) { if (e.target === modal) close(true); };\n'
+    + '  input.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); document.getElementById("keySubmit").click(); } };\n'
     + '}\n'
-    + 'function ensureManage(cb) {\n'
+    + 'function ensureManage(cb, onCancel) {\n'
     + '  if (document.body.classList.contains("manage")) { if (cb) cb(); return; }\n'
     + '  if (ADMIN_KEY) {\n'
     + '    apiPost("/api/manage-check", { key: ADMIN_KEY }).then(function (r) {\n'
     + '      if (r && r.ok) { setManage(true); if (cb) cb(); }\n'
-    + '      else { ADMIN_KEY = ""; sessionStorage.removeItem("gallery_admin_key"); askKey(cb); }\n'
-    + '    }).catch(function () { askKey(cb); });\n'
-    + '  } else askKey(cb);\n'
+    + '      else { ADMIN_KEY = ""; sessionStorage.removeItem("gallery_admin_key"); askKey(cb, onCancel); }\n'
+    + '    }).catch(function () { askKey(cb, onCancel); });\n'
+    + '  } else askKey(cb, onCancel);\n'
     + '}\n'
+    + 'function showManageView() { showView("images"); setHero("manage"); markTab("manage"); }\n'
     + 'function switchTab(name) {\n'
     + '  if (name === "manage") {\n'
     + '    if (document.body.classList.contains("manage")) { setManage(false); switchTab("images"); return; }\n'
-    + '    showView("images"); setHero("manage"); markTab("manage");\n'
-    + '    ensureManage();\n'
+    + '    showManageView();\n'
+    + '    ensureManage(null, function () { switchTab("images"); });\n'
     + '    return;\n'
     + '  }\n'
     + '  showView(name); setHero(name); markTab(name);\n'
@@ -429,7 +459,7 @@ function galleryHtml(items, flows) {
     + 'document.getElementById("mCopy").addEventListener("click", function () { copyText(document.getElementById("mPrompt").textContent, document.getElementById("mCopy"), "已复制 ✓"); });\n'
     + 'document.getElementById("mCopy2").addEventListener("click", function () { copyText(document.getElementById("mPrompt").textContent, document.getElementById("mCopy2"), "已复制 ✓"); });\n'
     + 'document.getElementById("mShare").addEventListener("click", function () { copyText(location.origin + location.pathname + "#" + (currentList[currentIdx] || {}).id, document.getElementById("mShare"), "链接已复制 ✓"); });\n'
-    + 'document.getElementById("mManage").addEventListener("click", function () { ensureManage(function () { closeDetail(); switchTab("manage"); }); });\n'
+    + 'document.getElementById("mManage").addEventListener("click", function () { ensureManage(function () { closeDetail(); showManageView(); }); });\n'
     + 'document.getElementById("mDelete").addEventListener("click", function () { var it = currentList[currentIdx]; if (it) deleteImage(it.id, closeDetail); });\n'
     + 'document.addEventListener("keydown", function (e) {\n'
     + '  if (!overlay.classList.contains("open")) return;\n'
@@ -460,6 +490,18 @@ function galleryHtml(items, flows) {
     + '    else alert("删除失败：" + ((r && r.error) || "未知错误"));\n'
     + '  }).catch(function () { alert("请求失败，请检查网络后重试。"); });\n'
     + '}\n'
+    + 'function deleteFlow(id, card) {\n'
+    + '  if (!id) return;\n'
+    + '  if (!confirm("确定删除这个工作流吗？删除后无法恢复。")) return;\n'
+    + '  apiPost("/api/workflow/delete", { id: id, key: ADMIN_KEY }).then(function (r) {\n'
+    + '    if (r && r.ok) { if (card) card.remove(); }\n'
+    + '    else if (r && r.error === "密钥不对") { alert("密钥不对，请退出管理后重新输入。"); }\n'
+    + '    else alert("删除失败：" + ((r && r.error) || "未知错误"));\n'
+    + '  }).catch(function () { alert("请求失败，请检查网络后重试。"); });\n'
+    + '}\n'
+    + 'document.querySelectorAll(".flow-del").forEach(function (btn) {\n'
+    + '  btn.addEventListener("click", function (e) { e.stopPropagation(); deleteFlow(btn.dataset.fid, btn.closest(".fcard")); });\n'
+    + '});\n'
     + 'document.querySelectorAll(".copy-btn").forEach(function (btn) {\n'
     + '  btn.addEventListener("click", function () {\n'
     + '    var it = ITEMS[parseInt(btn.dataset.idx, 10)];\n'
@@ -578,6 +620,24 @@ const server = http.createServer(async (req, res) => {
       }
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, remaining: items.length });
+    }
+    // 管理：删一个已上传的工作流（删文件 + 从索引移除），密钥与推送密钥相同
+    if (req.method === 'POST' && p === '/api/workflow/delete') {
+      if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置密钥' });
+      const body = await readJsonBody(req, 4096);
+      if (!body) return sendJson(res, 400, { ok: false, error: '请求格式不对' });
+      if (!keyOk(body.key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      const id = String(body.id || '');
+      const flows = loadFlows();
+      const idx = flows.findIndex(fl => fl.id === id);
+      if (idx === -1) return sendJson(res, 404, { ok: false, error: '找不到这个工作流' });
+      const removed = flows.splice(idx, 1)[0];
+      if (removed && removed.file) {
+        const fp = path.join(WORKFLOW_DIR, path.basename(removed.file));
+        if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      }
+      saveFlows(flows);
+      return sendJson(res, 200, { ok: true, id, remaining: flows.length });
     }
     // 工作流分享：上传一个 ComfyUI 工作流 JSON（公开上传，任何人可分享）
     if (req.method === 'POST' && p === '/api/workflow/upload') {
