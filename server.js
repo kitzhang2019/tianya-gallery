@@ -18,9 +18,7 @@ const { spawn } = require('child_process');
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
-const THUMB_DIR = path.join(DATA_DIR, 'thumbs');
-const THUMB_WIDTH = 480;
-const THUMB_QUALITY = 82;
+const WEBP_QUALITY = 85;
 const GALLERY_FILE = path.join(DATA_DIR, 'gallery.json');
 const WORKFLOW_DIR = path.join(DATA_DIR, 'workflows');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
@@ -30,7 +28,6 @@ const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_FLOW_BYTES = 2 * 1024 * 1024;
 
 fs.mkdirSync(IMAGE_DIR, { recursive: true });
-fs.mkdirSync(THUMB_DIR, { recursive: true });
 fs.mkdirSync(WORKFLOW_DIR, { recursive: true });
 fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(GALLERY_FILE)) fs.writeFileSync(GALLERY_FILE, '[]');
@@ -58,23 +55,25 @@ function saveFlows(flows) {
   fs.writeFileSync(tmp, JSON.stringify(flows, null, 2));
   fs.renameSync(tmp, WORKFLOWS_FILE);
 }
-// 缩略图：列表只加载 480px 宽的 JPEG 小图，点开详情仍看原图。
-// 用 ImageMagick 的 convert 生成（Dockerfile 里装 imagemagick）。
-// 老图没有缩略图时，第一次被请求才现做，之后直接读文件。
-const thumbMaking = new Set();
-function thumbFile(id) { return path.join(THUMB_DIR, id + '.jpg'); }
-function findOriginal(id) {
+// WebP：画廊只存 WebP 原图。PNG/JPG 上传后即转 WebP（质量 85），
+// 全尺寸 WebP 约 130KB（同图 PNG 约 3.6MB），列表直接加载原图，不用缩略图。
+// 老图在启动后由 migrateToWebp 一次性转掉。转失败则保留原格式，上传不中断。
+const webpConverting = new Set();
+function isWebpFile(f) {
   try {
-    const hit = fs.readdirSync(IMAGE_DIR).find(f => f.startsWith(id + '.'));
-    return hit ? path.join(IMAGE_DIR, hit) : null;
-  } catch { return null; }
+    const fd = fs.openSync(f, 'r');
+    const buf = Buffer.alloc(12);
+    fs.readSync(fd, buf, 0, 12, 0);
+    fs.closeSync(fd);
+    return buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP';
+  } catch { return false; }
 }
-function runConvert(orig, dest) {
-  // magick first: the `convert` shim in IMv7 is deprecated and mis-handles output format.
+function runWebpConvert(src, dest) {
+  // magick 优先：IMv7 里 convert 已废弃，写输出格式会出错；vips 兜底。
   const attempts = [
-    ['magick', [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), dest]],
-    ['vipsthumbnail', [orig, '-s', String(THUMB_WIDTH), '-o', dest + '[Q=' + THUMB_QUALITY + ']']],
-    ['convert', [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), dest]],
+    ['magick', [src, '-strip', '-quality', String(WEBP_QUALITY), dest]],
+    ['vips', ['copy', src, dest + '[Q=' + WEBP_QUALITY + ']']],
+    ['convert', [src, '-strip', '-quality', String(WEBP_QUALITY), dest]],
   ];
   return new Promise(resolve => {
     let i = 0;
@@ -84,38 +83,50 @@ function runConvert(orig, dest) {
       try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch {}
       const cp = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
+      let settled = false;
+      const timer = setTimeout(() => { try { cp.kill('SIGKILL'); } catch {} }, 20000);
+      const finish = (ok) => { if (settled) return; settled = true; clearTimeout(timer); if (ok) return resolve(true); next(); };
       cp.stderr.on('data', d => { err += d.toString(); });
-      cp.on('error', e => { console.log('thumb spawn failed', bin, e.message); next(); });
+      cp.on('error', e => { console.log('webp spawn failed', bin, e.message); finish(false); });
       cp.on('close', code => {
-        if (code !== 0) console.log('thumb convert failed', bin, 'code', code, err.slice(0, 300));
-        if (code === 0 && fs.existsSync(dest) && isJpegFile(dest)) return resolve(true);
-        next();
+        if (code !== 0) console.log('webp convert failed', bin, 'code', code, err.slice(0, 300));
+        finish(code === 0 && fs.existsSync(dest) && isWebpFile(dest));
       });
     };
     next();
   });
 }
-function isJpegFile(f) {
+// 把一张已存的图片转成 WebP，成功返回新路径并删原文件，失败返回原路径。
+async function convertToWebp(id, srcPath) {
+  if (!srcPath || String(srcPath).toLowerCase().endsWith('.webp')) return srcPath;
+  if (webpConverting.has(id)) return srcPath;
+  webpConverting.add(id);
   try {
-    const fd = fs.openSync(f, 'r');
-    const buf = Buffer.alloc(3);
-    fs.readSync(fd, buf, 0, 3, 0);
-    fs.closeSync(fd);
-    return buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF;
-  } catch { return false; }
-}
-async function makeThumb(id) {
-  const dest = thumbFile(id);
-  if (fs.existsSync(dest)) return true;
-  if (thumbMaking.has(id)) return false;
-  const orig = findOriginal(id);
-  if (!orig) return false;
-  thumbMaking.add(id);
-  try {
-    return await runConvert(orig, dest);
+    const dest = path.join(IMAGE_DIR, id + '.webp');
+    const ok = await runWebpConvert(srcPath, dest);
+    if (ok) {
+      try { fs.unlinkSync(srcPath); } catch {}
+      return dest;
+    }
+    return srcPath;
   } finally {
-    thumbMaking.delete(id);
+    webpConverting.delete(id);
   }
+}
+// 启动后把老 PNG/JPG 一次性转 WebP（后台跑，不挡服务启动，可重复跑）。
+async function migrateToWebp() {
+  try {
+    const items = loadItems();
+    let changed = false;
+    for (const it of items) {
+      if (!it.file || String(it.file).toLowerCase().endsWith('.webp')) continue;
+      const src = path.join(IMAGE_DIR, path.basename(it.file));
+      if (!fs.existsSync(src)) continue;
+      const out = await convertToWebp(it.id, src);
+      if (out !== src) { it.file = 'images/' + path.basename(out); changed = true; console.log('webp migrated', it.id); }
+    }
+    if (changed) saveItems(items);
+  } catch (e) { console.log('webp migrate failed', e && e.message); }
 }
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -180,7 +191,7 @@ function galleryHtml(items, flows) {
     const title = (it.prompt || '').trim().slice(0, 24) || model || '无标题';
     return '<article class="card" data-idx="' + i + '" data-id="' + esc(it.id || '') + '" data-model="' + model + '">'
       + '<button class="del-btn" data-id="' + esc(it.id || '') + '" aria-label="删除这张图">×</button>'
-      + '<div class="thumb"><img src="thumbs/' + esc(it.id || '') + '.jpg" alt="" loading="lazy" onerror="this.onerror=null;this.src=\'' + file + '\'"></div>'
+      + '<div class="thumb"><img src="' + file + '" alt="" loading="lazy"></div>'
       + '<div class="card-t">' + esc(title) + '</div>'
       + '<div class="card-m">' + model + (model && date ? ' · ' : '') + date + '</div></article>';
   }).join('\n');
@@ -809,20 +820,6 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'font/woff2', 'Cache-Control': 'public, max-age=86400' });
       return res.end(fs.readFileSync(f));
     }
-    if (req.method === 'GET' && p.startsWith('/thumbs/')) {
-      const name = path.basename(p);
-      if (!name.endsWith('.jpg')) return sendJson(res, 404, { ok: false, error: 'not found' });
-      const id = name.slice(0, -4);
-      if (!id || id.includes('/') || id.includes('..')) return sendJson(res, 404, { ok: false, error: 'not found' });
-      const f = thumbFile(id);
-      if (!fs.existsSync(f) || !isJpegFile(f)) {
-        if (fs.existsSync(f)) fs.unlinkSync(f);
-        const made = await makeThumb(id);
-        if (!made || !fs.existsSync(f) || !isJpegFile(f)) return sendJson(res, 404, { ok: false, error: 'not found' });
-      }
-      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
-      return res.end(fs.readFileSync(f));
-    }
     if (req.method === 'GET' && p.startsWith('/images/')) {
       const name = path.basename(p);
       const f = path.join(IMAGE_DIR, name);
@@ -863,8 +860,6 @@ const server = http.createServer(async (req, res) => {
         const fp = path.join(IMAGE_DIR, path.basename(removed.file));
         if (fs.existsSync(fp)) fs.unlinkSync(fp);
       }
-      const tf = thumbFile(id);
-      if (fs.existsSync(tf)) fs.unlinkSync(tf);
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, remaining: items.length });
     }
@@ -937,9 +932,12 @@ const server = http.createServer(async (req, res) => {
       const id = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '') + '-' + crypto.randomBytes(4).toString('hex');
       // 上面日期串形如 20261111-112233，去掉多余字符后仍唯一（加随机后缀）
       const filename = id + '.' + det.ext;
-      fs.writeFileSync(path.join(IMAGE_DIR, filename), file.data);
+      const saved = path.join(IMAGE_DIR, filename);
+      fs.writeFileSync(saved, file.data);
+      // 收到的 PNG/JPG 即转 WebP 再入库（转失败则保留原格式）
+      const finalPath = await convertToWebp(id, saved);
       const entry = {
-        id, file: 'images/' + filename,
+        id, file: 'images/' + path.basename(finalPath),
         prompt: String(fields.prompt || '').trim(),
         model: String(fields.model || '').trim(),
         seed: String(fields.seed || '').trim(),
@@ -952,11 +950,9 @@ const server = http.createServer(async (req, res) => {
       while (items.length > MAX_ITEMS) {
         const old = items.pop();
         if (old && old.file) { const fp = path.join(IMAGE_DIR, path.basename(old.file)); if (fs.existsSync(fp)) fs.unlinkSync(fp); }
-        if (old && old.id) { const tf = thumbFile(old.id); if (fs.existsSync(tf)) fs.unlinkSync(tf); }
       }
       saveItems(items);
-      makeThumb(id).catch(() => {});
-      return sendJson(res, 200, { ok: true, id, url: 'images/' + filename });
+      return sendJson(res, 200, { ok: true, id, url: entry.file });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
   } catch (e) {
@@ -966,4 +962,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log('tianya-gallery listening on ' + PORT + ' data=' + DATA_DIR));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('tianya-gallery listening on ' + PORT + ' data=' + DATA_DIR);
+  migrateToWebp();
+});
