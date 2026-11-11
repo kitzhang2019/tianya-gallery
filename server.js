@@ -70,18 +70,29 @@ function findOriginal(id) {
   } catch { return null; }
 }
 function runConvert(orig, dest) {
+  // magick first: the `convert` shim in IMv7 is deprecated and mis-handles output format.
+  const attempts = [
+    ['magick', [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), dest]],
+    ['vipsthumbnail', [orig, '-s', String(THUMB_WIDTH), '-o', dest + '[Q=' + THUMB_QUALITY + ']']],
+    ['convert', [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), dest]],
+  ];
   return new Promise(resolve => {
-    const tryBin = (bin, next) => {
-      const cp = spawn(bin, [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), 'jpg:' + dest], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let i = 0;
+    const next = () => {
+      if (i >= attempts.length) return resolve(false);
+      const [bin, args] = attempts[i++];
+      try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch {}
+      const cp = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let err = '';
       cp.stderr.on('data', d => { err += d.toString(); });
-      cp.on('error', e => { console.log('thumb spawn failed', bin, e.message); resolve(next ? tryBin('magick', null) : false); });
+      cp.on('error', e => { console.log('thumb spawn failed', bin, e.message); next(); });
       cp.on('close', code => {
-        if (code !== 0) console.log('thumb convert failed', bin, 'code', code, err.slice(0, 500));
-        resolve(code === 0 && fs.existsSync(dest));
+        if (code !== 0) console.log('thumb convert failed', bin, 'code', code, err.slice(0, 300));
+        if (code === 0 && fs.existsSync(dest) && isJpegFile(dest)) return resolve(true);
+        next();
       });
     };
-    tryBin('convert', true);
+    next();
   });
 }
 function isJpegFile(f) {
