@@ -10,6 +10,7 @@
 // 列表见 GET /api/workflows，文件走 GET /workflows/<文件> 下载。
 'use strict';
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -23,6 +24,13 @@ const GALLERY_FILE = path.join(DATA_DIR, 'gallery.json');
 const WORKFLOW_DIR = path.join(DATA_DIR, 'workflows');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const SHOWCASE_KEY = process.env.SHOWCASE_KEY || '';
+// jsDelivr 镜像：图片同步到 GitHub 仓库 images/，页面优先走 jsDelivr 加载（国内快），
+// 失败回退本地。GITHUB_TOKEN 为空时不同步、不影响正常上传/删除。
+const GH_REPO = 'kitzhang2019/tianya-gallery';
+const GH_BRANCH = 'main';
+const GH_TOKEN = process.env.GITHUB_TOKEN || '';
+const CDN_BASE = 'https://cdn.jsdelivr.net/gh/' + GH_REPO + '@' + GH_BRANCH + '/';
+function cdnUrl(file) { return CDN_BASE + String(file || ''); }
 const MAX_ITEMS = 200;
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_FLOW_BYTES = 2 * 1024 * 1024;
@@ -113,6 +121,66 @@ async function convertToWebp(id, srcPath) {
     webpConverting.delete(id);
   }
 }
+// GitHub Contents API（jsDelivr 镜像用）。无 GITHUB_TOKEN 时直接跳过，绝不影响主流程。
+function ghApi(method, apiPath, body) {
+  return new Promise(resolve => {
+    if (!GH_TOKEN) return resolve(null);
+    const data = body ? JSON.stringify(body) : null;
+    const req = https.request({
+      hostname: 'api.github.com', port: 443, path: apiPath, method,
+      headers: {
+        'User-Agent': 'tianya-gallery',
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + GH_TOKEN,
+        ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}),
+      },
+      timeout: 15000,
+    }, res => {
+      let buf = '';
+      res.on('data', d => { buf += d; });
+      res.on('end', () => { let j = null; try { j = JSON.parse(buf); } catch {} resolve({ status: res.statusCode, json: j }); });
+    });
+    req.on('timeout', () => { try { req.destroy(); } catch {} resolve(null); });
+    req.on('error', e => { console.log('github api error', e.message); resolve(null); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+// 把本地一张图推到仓库 images/（已存在时带 sha 覆盖）。后台调用，不挡返回。
+async function ghPutImage(localPath) {
+  try {
+    if (!GH_TOKEN) return;
+    const name = path.basename(localPath);
+    const buf = fs.readFileSync(localPath);
+    const apiPath = '/repos/' + GH_REPO + '/contents/images/' + encodeURIComponent(name);
+    const get = await ghApi('GET', apiPath + '?ref=' + GH_BRANCH);
+    const sha = get && get.status === 200 && get.json && get.json.sha ? get.json.sha : undefined;
+    const put = await ghApi('PUT', apiPath, {
+      message: 'gallery image ' + name,
+      content: buf.toString('base64'),
+      branch: GH_BRANCH,
+      ...(sha ? { sha } : {}),
+    });
+    if (put && (put.status === 200 || put.status === 201)) console.log('github synced', name);
+    else console.log('github put failed', name, put && put.status);
+  } catch (e) { console.log('github put error', e && e.message); }
+}
+// 从仓库 images/ 删一张图（不存在就跳过）。
+async function ghDeleteImage(name) {
+  try {
+    if (!GH_TOKEN) return;
+    const apiPath = '/repos/' + GH_REPO + '/contents/images/' + encodeURIComponent(name);
+    const get = await ghApi('GET', apiPath + '?ref=' + GH_BRANCH);
+    if (!get || get.status !== 200 || !get.json || !get.json.sha) { console.log('github delete skip (not in repo)', name); return; }
+    const del = await ghApi('DELETE', apiPath, {
+      message: 'remove gallery image ' + name,
+      sha: get.json.sha,
+      branch: GH_BRANCH,
+    });
+    if (del && del.status === 200) console.log('github deleted', name);
+    else console.log('github delete failed', name, del && del.status);
+  } catch (e) { console.log('github delete error', e && e.message); }
+}
 // 启动后把老 PNG/JPG 一次性转 WebP（后台跑，不挡服务启动，可重复跑）。
 async function migrateToWebp() {
   try {
@@ -123,7 +191,10 @@ async function migrateToWebp() {
       const src = path.join(IMAGE_DIR, path.basename(it.file));
       if (!fs.existsSync(src)) continue;
       const out = await convertToWebp(it.id, src);
-      if (out !== src) { it.file = 'images/' + path.basename(out); changed = true; console.log('webp migrated', it.id); }
+      if (out !== src) {
+        it.file = 'images/' + path.basename(out); changed = true; console.log('webp migrated', it.id);
+        if (GH_TOKEN) { ghPutImage(out); ghDeleteImage(path.basename(src)); }
+      }
     }
     if (changed) saveItems(items);
   } catch (e) { console.log('webp migrate failed', e && e.message); }
@@ -191,7 +262,7 @@ function galleryHtml(items, flows) {
     const title = (it.prompt || '').trim().slice(0, 24) || model || '无标题';
     return '<article class="card" data-idx="' + i + '" data-id="' + esc(it.id || '') + '" data-model="' + model + '">'
       + '<button class="del-btn" data-id="' + esc(it.id || '') + '" aria-label="删除这张图">×</button>'
-      + '<div class="thumb"><img src="' + file + '" alt="" loading="lazy"></div>'
+      + '<div class="thumb"><img src="' + cdnUrl(file) + '" onerror="this.onerror=null;this.src=\'' + file + '\'" alt="" loading="lazy"></div>'
       + '<div class="card-t">' + esc(title) + '</div>'
       + '<div class="card-m">' + model + (model && date ? ' · ' : '') + date + '</div></article>';
   }).join('\n');
@@ -491,6 +562,7 @@ function galleryHtml(items, flows) {
     + '</div></div>\n'
     + '<script>\n'
     + 'var ITEMS = ' + itemsJson + ';\n'
+    + 'var CDN = "https://cdn.jsdelivr.net/gh/kitzhang2019/tianya-gallery@main/";\n'
     + 'var currentList = ITEMS.slice();\n'
     + 'var currentIdx = 0;\n'
     + 'var ADMIN_KEY = sessionStorage.getItem("gallery_admin_key") || "";\n'
@@ -600,7 +672,9 @@ function galleryHtml(items, flows) {
     + 'function openDetail(listIdx) {\n'
     + '  var it = currentList[listIdx]; if (!it) return;\n'
     + '  currentIdx = listIdx;\n'
-    + '  document.getElementById("mImg").src = it.file;\n'
+    + '  var mImg = document.getElementById("mImg");\n'
+    + '  mImg.onerror = function () { mImg.onerror = null; mImg.src = it.file; };\n'
+    + '  mImg.src = CDN + it.file;\n'
     + '  document.getElementById("mPill").textContent = (listIdx + 1) + " / " + currentList.length;\n'
     + '  document.getElementById("mMeta").textContent = (it.model || "") + " · " + String(it.created_at || "").slice(0, 10) + " · " + (listIdx + 1) + "/" + currentList.length;\n'
     + '  var title = (it.prompt || "").trim().slice(0, 24) || it.model || "无标题";\n'
@@ -881,6 +955,7 @@ const server = http.createServer(async (req, res) => {
       if (removed && removed.file) {
         const fp = path.join(IMAGE_DIR, path.basename(removed.file));
         if (fs.existsSync(fp)) fs.unlinkSync(fp);
+        if (GH_TOKEN) ghDeleteImage(path.basename(removed.file));
       }
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, remaining: items.length });
@@ -971,9 +1046,15 @@ const server = http.createServer(async (req, res) => {
       items.unshift(entry);
       while (items.length > MAX_ITEMS) {
         const old = items.pop();
-        if (old && old.file) { const fp = path.join(IMAGE_DIR, path.basename(old.file)); if (fs.existsSync(fp)) fs.unlinkSync(fp); }
+        if (old && old.file) {
+          const fp = path.join(IMAGE_DIR, path.basename(old.file));
+          if (fs.existsSync(fp)) fs.unlinkSync(fp);
+          if (GH_TOKEN) ghDeleteImage(path.basename(old.file));
+        }
       }
       saveItems(items);
+      // 同步到 GitHub（jsDelivr 镜像），后台跑，不挡返回
+      if (GH_TOKEN) ghPutImage(finalPath);
       return sendJson(res, 200, { ok: true, id, url: entry.file });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
