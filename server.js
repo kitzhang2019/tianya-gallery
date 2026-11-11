@@ -80,7 +80,8 @@ function galleryHtml(items) {
     const prompt = esc(it.prompt || '');
     const model = esc(it.model || '');
     const date = esc(String(it.created_at || '').slice(0, 16).replace('T', ' '));
-    return `<article class="card" data-idx="${i}">
+    return `<article class="card" data-idx="${i}" data-id="${esc(it.id || '')}">
+      <button class="del-btn" data-id="${esc(it.id || '')}" aria-label="删除这张图">×</button>
       <div class="thumb"><img src="${file}" alt="" loading="lazy"><div class="veil"><span>查看大图 · 提示词</span></div></div>
       <div class="meta"><div class="tags">${model ? `<span class="model">${model}</span>` : ''}<span class="date">${date}</span></div>
       <div class="prompt">${prompt}</div></div></article>`;
@@ -104,6 +105,16 @@ function galleryHtml(items) {
   .brand .sub { font-size: 12px; color: #9ca3af; letter-spacing: 3px; margin-left: 2px; }
   .nav-count { font-size: 13px; color: #6b7280; background: #f0f0f0; border: 1px solid #e5e5e5; padding: 5px 12px; border-radius: 999px; }
   .nav-count b { color: #111827; font-weight: 600; }
+  .nav-actions { display: flex; gap: 10px; align-items: center; }
+  .manage-btn { font-size: 13px; color: #374151; background: #fff; border: 1px solid #d1d5db; padding: 6px 14px; border-radius: 999px; cursor: pointer; font-weight: 600; letter-spacing: 1px; }
+  .manage-btn:hover { background: #f3f4f6; }
+  body.manage .manage-btn { background: #111827; color: #fff; border-color: #111827; }
+  .card .del-btn { display: none; position: absolute; top: 10px; right: 10px; z-index: 5; width: 30px; height: 30px; border-radius: 50%; border: none; background: rgba(17,24,39,.85); color: #fff; font-size: 18px; line-height: 1; cursor: pointer; }
+  .card .del-btn:hover { background: #dc2626; }
+  body.manage .card .del-btn { display: block; }
+  body.manage .card { cursor: default; }
+  .lb-actions button.danger { background: #dc2626; color: #fff; display: none; }
+  body.manage .lb-actions button.danger { display: inline-block; }
   .hero { max-width: 1280px; margin: 0 auto; padding: 56px 24px 8px; }
   .hero h1 { font-size: 40px; font-weight: 800; letter-spacing: 4px; line-height: 1.2; }
   .hero p { margin-top: 12px; font-size: 15px; line-height: 1.8; color: #6b7280; max-width: 560px; }
@@ -146,7 +157,7 @@ function galleryHtml(items) {
 </style></head><body>
 <nav class="nav"><div class="nav-inner">
   <a class="brand" href="./"><img src="favicon.svg" alt=""><span class="name">天涯画廊</span><span class="sub">GALLERY</span></a>
-  <span class="nav-count">共 <b>${count}</b> 张</span>
+  <div class="nav-actions"><span class="nav-count">共 <b id="navCount">${count}</b> 张</span><button class="manage-btn" id="manageBtn">管理</button></div>
 </div></nav>
 <div class="hero"><h1>天涯画廊</h1><p>每一次生图，都在这里。原图直出，附完整提示词，<b>点任意一张图</b>查看大图与提示词。</p></div>
 ${body}
@@ -155,13 +166,14 @@ ${body}
   <div class="lb-inner"><img id="lbImg" src="" alt=""><div class="lb-body">
     <div class="tags"><span class="model" id="lbModel"></span><span class="date" id="lbDate"></span><span class="seed" id="lbSeed"></span><span class="size" id="lbSize"></span></div>
     <div class="prompt" id="lbPrompt"></div>
-    <div class="lb-actions"><a id="lbDownload" href="" download>保存原图</a><button class="ghost" id="lbCopy">复制提示词</button></div>
+    <div class="lb-actions"><a id="lbDownload" href="" download>保存原图</a><button class="ghost" id="lbCopy">复制提示词</button><button class="danger" id="lbDelete">删除这张图</button></div>
   </div></div></div>
 <script>
 const ITEMS = ${itemsJson};
 const lb = document.getElementById('lightbox');
 function openLb(i) {
   const it = ITEMS[i]; if (!it) return;
+  currentId = it.id || '';
   document.getElementById('lbImg').src = it.file;
   const m = document.getElementById('lbModel'); m.textContent = it.model || ''; m.style.display = it.model ? '' : 'none';
   document.getElementById('lbDate').textContent = (it.created_at || '').slice(0, 16).replace('T', ' ');
@@ -182,6 +194,55 @@ document.getElementById('lbCopy').addEventListener('click', function () {
   if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(function () { done('已复制 ✓'); }, function () { done('复制失败'); }); }
   else { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done('已复制 ✓'); } catch (e) { done('复制失败'); } document.body.removeChild(ta); }
 });
+// 管理模式：密钥与推送密钥相同，只存在当前会话里，关掉页面即失效
+let ADMIN_KEY = sessionStorage.getItem('gallery_admin_key') || '';
+let currentId = '';
+const manageBtn = document.getElementById('manageBtn');
+function setManage(on) {
+  document.body.classList.toggle('manage', on);
+  manageBtn.textContent = on ? '退出管理' : '管理';
+}
+function apiPost(path, data) {
+  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(function (r) { return r.json(); });
+}
+function askKey() {
+  const k = prompt('请输入管理密钥（与推送密钥相同）：');
+  if (!k) return;
+  apiPost('/api/manage-check', { key: k }).then(function (r) {
+    if (r && r.ok) { ADMIN_KEY = k; sessionStorage.setItem('gallery_admin_key', k); setManage(true); }
+    else alert('密钥不对，请重试。');
+  }).catch(function () { alert('请求失败，请检查网络后重试。'); });
+}
+function enterManage() {
+  if (ADMIN_KEY) {
+    apiPost('/api/manage-check', { key: ADMIN_KEY }).then(function (r) {
+      if (r && r.ok) setManage(true);
+      else { ADMIN_KEY = ''; sessionStorage.removeItem('gallery_admin_key'); askKey(); }
+    }).catch(function () { askKey(); });
+  } else askKey();
+}
+manageBtn.addEventListener('click', function () {
+  if (document.body.classList.contains('manage')) setManage(false);
+  else enterManage();
+});
+function deleteImage(id, done) {
+  if (!id) return;
+  if (!confirm('确定删除这张图吗？删除后无法恢复。')) return;
+  apiPost('/api/delete', { id: id, key: ADMIN_KEY }).then(function (r) {
+    if (r && r.ok) {
+      const card = document.querySelector('.card[data-id="' + id + '"]');
+      if (card) card.remove();
+      const n = document.getElementById('navCount');
+      if (n) n.textContent = r.remaining;
+      if (done) done();
+    } else if (r && r.error === '密钥不对') { alert('密钥不对，请退出管理后重新输入。'); }
+    else alert('删除失败：' + ((r && r.error) || '未知错误'));
+  }).catch(function () { alert('请求失败，请检查网络后重试。'); });
+}
+document.querySelectorAll('.del-btn').forEach(function (btn) {
+  btn.addEventListener('click', function (e) { e.stopPropagation(); deleteImage(btn.dataset.id); });
+});
+document.getElementById('lbDelete').addEventListener('click', function () { deleteImage(currentId, closeLb); });
 </script></body></html>`;
 }
 
@@ -198,12 +259,49 @@ function readBody(req, limit) {
   });
 }
 
+function keyOk(key) {
+  if (!SHOWCASE_KEY) return false;
+  const a = Buffer.from(String(key || '')), b = Buffer.from(SHOWCASE_KEY);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function readJsonBody(req, limit) {
+  return readBody(req, limit).then(buf => {
+    try { return JSON.parse(buf.toString('utf8') || '{}'); } catch { return null; }
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
     if (req.method === 'GET' && p === '/api/health') return sendJson(res, 200, { ok: true, service: 'tianya-gallery', time: new Date().toISOString() });
     if (req.method === 'GET' && p === '/api/gallery') return sendJson(res, 200, { ok: true, items: loadItems() });
+    // 管理：校验密钥（进入管理模式时用，不删任何东西）
+    if (req.method === 'POST' && p === '/api/manage-check') {
+      if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置密钥' });
+      const body = await readJsonBody(req, 4096);
+      if (!body) return sendJson(res, 400, { ok: false, error: '请求格式不对' });
+      if (!keyOk(body.key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      return sendJson(res, 200, { ok: true });
+    }
+    // 管理：删一张图（删文件 + 从索引移除），密钥与推送密钥相同
+    if (req.method === 'POST' && p === '/api/delete') {
+      if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置密钥' });
+      const body = await readJsonBody(req, 4096);
+      if (!body) return sendJson(res, 400, { ok: false, error: '请求格式不对' });
+      if (!keyOk(body.key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      const id = String(body.id || '');
+      const items = loadItems();
+      const idx = items.findIndex(it => it.id === id);
+      if (idx === -1) return sendJson(res, 404, { ok: false, error: '找不到这张图' });
+      const removed = items.splice(idx, 1)[0];
+      if (removed && removed.file) {
+        const fp = path.join(IMAGE_DIR, path.basename(removed.file));
+        if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      }
+      saveItems(items);
+      return sendJson(res, 200, { ok: true, id, remaining: items.length });
+    }
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(galleryHtml(loadItems()));
@@ -230,8 +328,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req, MAX_BYTES + 1024 * 1024);
       const { fields, file } = parseMultipart(body, (m[1] || m[2]).trim());
       const key = String(fields.key || '');
-      const a = Buffer.from(key), b = Buffer.from(SHOWCASE_KEY);
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      if (!keyOk(key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
       if (!file || !file.data || file.data.length === 0) return sendJson(res, 400, { ok: false, error: '没有收到图片文件' });
       if (file.data.length > MAX_BYTES) return sendJson(res, 400, { ok: false, error: '图片大小超出限制' });
       const det = detectImage(file.data);
@@ -253,7 +350,7 @@ const server = http.createServer(async (req, res) => {
       items.unshift(entry);
       while (items.length > MAX_ITEMS) {
         const old = items.pop();
-        if (old && old.file) { const fp = path.join(DATA_DIR, path.basename(old.file)); if (fs.existsSync(fp)) fs.unlinkSync(fp); }
+        if (old && old.file) { const fp = path.join(IMAGE_DIR, path.basename(old.file)); if (fs.existsSync(fp)) fs.unlinkSync(fp); }
       }
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, url: 'images/' + filename });
