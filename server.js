@@ -26,7 +26,7 @@ const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const SHOWCASE_KEY = process.env.SHOWCASE_KEY || '';
 // jsDelivr 镜像：图片同步到 GitHub 仓库 images/，页面优先走 jsDelivr 加载（国内快），
 // 失败回退本地。GITHUB_TOKEN 为空时不同步、不影响正常上传/删除。
-const GH_REPO = 'kitzhang2019/tianya-gallery';
+const GH_REPO = 'kitzhang2019/tianya-gallery-images';
 const GH_BRANCH = 'main';
 const GH_TOKEN = process.env.GITHUB_TOKEN || '';
 const CDN_BASE = 'https://cdn.jsdelivr.net/gh/' + GH_REPO + '@' + GH_BRANCH + '/';
@@ -562,7 +562,7 @@ function galleryHtml(items, flows) {
     + '</div></div>\n'
     + '<script>\n'
     + 'var ITEMS = ' + itemsJson + ';\n'
-    + 'var CDN = "https://cdn.jsdelivr.net/gh/kitzhang2019/tianya-gallery@main/";\n'
+    + 'var CDN = "' + CDN_BASE + '";\n'
     + 'var currentList = ITEMS.slice();\n'
     + 'var currentIdx = 0;\n'
     + 'var ADMIN_KEY = sessionStorage.getItem("gallery_admin_key") || "";\n'
