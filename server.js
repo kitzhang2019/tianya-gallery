@@ -72,12 +72,21 @@ function findOriginal(id) {
 function runConvert(orig, dest) {
   return new Promise(resolve => {
     const tryBin = (bin, next) => {
-      const cp = spawn(bin, [orig, '-resize', THUMB_WIDTH + 'x', '-quality', String(THUMB_QUALITY), dest], { stdio: 'ignore' });
+      const cp = spawn(bin, [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), 'jpg:' + dest], { stdio: 'ignore' });
       cp.on('error', () => resolve(next ? tryBin('magick', null) : false));
       cp.on('close', code => resolve(code === 0 && fs.existsSync(dest)));
     };
     tryBin('convert', true);
   });
+}
+function isJpegFile(f) {
+  try {
+    const fd = fs.openSync(f, 'r');
+    const buf = Buffer.alloc(3);
+    fs.readSync(fd, buf, 0, 3, 0);
+    fs.closeSync(fd);
+    return buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF;
+  } catch { return false; }
 }
 async function makeThumb(id) {
   const dest = thumbFile(id);
@@ -790,9 +799,10 @@ const server = http.createServer(async (req, res) => {
       const id = name.slice(0, -4);
       if (!id || id.includes('/') || id.includes('..')) return sendJson(res, 404, { ok: false, error: 'not found' });
       const f = thumbFile(id);
-      if (!fs.existsSync(f)) {
+      if (!fs.existsSync(f) || !isJpegFile(f)) {
+        if (fs.existsSync(f)) fs.unlinkSync(f);
         const made = await makeThumb(id);
-        if (!made || !fs.existsSync(f)) return sendJson(res, 404, { ok: false, error: 'not found' });
+        if (!made || !fs.existsSync(f) || !isJpegFile(f)) return sendJson(res, 404, { ok: false, error: 'not found' });
       }
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
       return res.end(fs.readFileSync(f));
