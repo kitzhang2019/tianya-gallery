@@ -265,7 +265,7 @@ function galleryHtml(items, flows) {
     + '  body.dark .card-t { color: #888888; }\n'
     + '  body.dark .card:hover .card-t { color: #ffffff; }\n'
     + '  body.dark .card-m { color: #666666; }\n'
-    + '  body.dark .pcard, body.dark .fcard { background: #1e1e1e; border-bottom-color: #2e2e2e; }\n'
+    + '  body.dark .pcard, body.dark .fcard { background: transparent; border-bottom-color: #2e2e2e; }\n'
     + '  body.dark .fname { color: #f5f5f5; }\n'
     + '  body.dark .ptext, body.dark .fdesc { color: #a3a3a3; }\n'
     + '  body.dark .model, body.dark .date, body.dark .author, body.dark .tag { color: #888888; }\n'
