@@ -13,10 +13,14 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
+const THUMB_DIR = path.join(DATA_DIR, 'thumbs');
+const THUMB_WIDTH = 480;
+const THUMB_QUALITY = 82;
 const GALLERY_FILE = path.join(DATA_DIR, 'gallery.json');
 const WORKFLOW_DIR = path.join(DATA_DIR, 'workflows');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
@@ -26,6 +30,7 @@ const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_FLOW_BYTES = 2 * 1024 * 1024;
 
 fs.mkdirSync(IMAGE_DIR, { recursive: true });
+fs.mkdirSync(THUMB_DIR, { recursive: true });
 fs.mkdirSync(WORKFLOW_DIR, { recursive: true });
 fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(GALLERY_FILE)) fs.writeFileSync(GALLERY_FILE, '[]');
@@ -52,6 +57,40 @@ function saveFlows(flows) {
   const tmp = WORKFLOWS_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(flows, null, 2));
   fs.renameSync(tmp, WORKFLOWS_FILE);
+}
+// 缩略图：列表只加载 480px 宽的 JPEG 小图，点开详情仍看原图。
+// 用 ImageMagick 的 convert 生成（Dockerfile 里装 imagemagick）。
+// 老图没有缩略图时，第一次被请求才现做，之后直接读文件。
+const thumbMaking = new Set();
+function thumbFile(id) { return path.join(THUMB_DIR, id + '.jpg'); }
+function findOriginal(id) {
+  try {
+    const hit = fs.readdirSync(IMAGE_DIR).find(f => f.startsWith(id + '.'));
+    return hit ? path.join(IMAGE_DIR, hit) : null;
+  } catch { return null; }
+}
+function runConvert(orig, dest) {
+  return new Promise(resolve => {
+    const tryBin = (bin, next) => {
+      const cp = spawn(bin, [orig, '-resize', THUMB_WIDTH + 'x', '-quality', String(THUMB_QUALITY), dest], { stdio: 'ignore' });
+      cp.on('error', () => resolve(next ? tryBin('magick', null) : false));
+      cp.on('close', code => resolve(code === 0 && fs.existsSync(dest)));
+    };
+    tryBin('convert', true);
+  });
+}
+async function makeThumb(id) {
+  const dest = thumbFile(id);
+  if (fs.existsSync(dest)) return true;
+  if (thumbMaking.has(id)) return false;
+  const orig = findOriginal(id);
+  if (!orig) return false;
+  thumbMaking.add(id);
+  try {
+    return await runConvert(orig, dest);
+  } finally {
+    thumbMaking.delete(id);
+  }
 }
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -116,7 +155,7 @@ function galleryHtml(items, flows) {
     const title = (it.prompt || '').trim().slice(0, 24) || model || '无标题';
     return '<article class="card" data-idx="' + i + '" data-id="' + esc(it.id || '') + '" data-model="' + model + '">'
       + '<button class="del-btn" data-id="' + esc(it.id || '') + '" aria-label="删除这张图">×</button>'
-      + '<div class="thumb"><img src="' + file + '" alt="" loading="lazy"></div>'
+      + '<div class="thumb"><img src="thumbs/' + esc(it.id || '') + '.jpg" alt="" loading="lazy" onerror="this.onerror=null;this.src=\'' + file + '\'"></div>'
       + '<div class="card-t">' + esc(title) + '</div>'
       + '<div class="card-m">' + model + (model && date ? ' · ' : '') + date + '</div></article>';
   }).join('\n');
@@ -745,6 +784,19 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'font/woff2', 'Cache-Control': 'public, max-age=86400' });
       return res.end(fs.readFileSync(f));
     }
+    if (req.method === 'GET' && p.startsWith('/thumbs/')) {
+      const name = path.basename(p);
+      if (!name.endsWith('.jpg')) return sendJson(res, 404, { ok: false, error: 'not found' });
+      const id = name.slice(0, -4);
+      if (!id || id.includes('/') || id.includes('..')) return sendJson(res, 404, { ok: false, error: 'not found' });
+      const f = thumbFile(id);
+      if (!fs.existsSync(f)) {
+        const made = await makeThumb(id);
+        if (!made || !fs.existsSync(f)) return sendJson(res, 404, { ok: false, error: 'not found' });
+      }
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
+      return res.end(fs.readFileSync(f));
+    }
     if (req.method === 'GET' && p.startsWith('/images/')) {
       const name = path.basename(p);
       const f = path.join(IMAGE_DIR, name);
@@ -785,6 +837,8 @@ const server = http.createServer(async (req, res) => {
         const fp = path.join(IMAGE_DIR, path.basename(removed.file));
         if (fs.existsSync(fp)) fs.unlinkSync(fp);
       }
+      const tf = thumbFile(id);
+      if (fs.existsSync(tf)) fs.unlinkSync(tf);
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, remaining: items.length });
     }
@@ -872,8 +926,10 @@ const server = http.createServer(async (req, res) => {
       while (items.length > MAX_ITEMS) {
         const old = items.pop();
         if (old && old.file) { const fp = path.join(IMAGE_DIR, path.basename(old.file)); if (fs.existsSync(fp)) fs.unlinkSync(fp); }
+        if (old && old.id) { const tf = thumbFile(old.id); if (fs.existsSync(tf)) fs.unlinkSync(tf); }
       }
       saveItems(items);
+      makeThumb(id).catch(() => {});
       return sendJson(res, 200, { ok: true, id, url: 'images/' + filename });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
