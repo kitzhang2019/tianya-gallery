@@ -1,0 +1,16 @@
+# 天涯画廊（阿可 / Cloady）：用 compose 声明服务与持久卷。
+# Cloady 读 compose 文件建应用：服务 + 卷在创建时定死，之后改 compose 再推即生效。
+# 密钥 SHOWCASE_KEY 不写在这里，部署后用 Cloady API 以 Secret 变量补上再重部署。
+services:
+  gallery:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATA_DIR: /data
+    volumes:
+      - gallery-data:/data
+volumes:
+  gallery-data:
