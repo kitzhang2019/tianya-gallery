@@ -72,9 +72,14 @@ function findOriginal(id) {
 function runConvert(orig, dest) {
   return new Promise(resolve => {
     const tryBin = (bin, next) => {
-      const cp = spawn(bin, [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), 'jpg:' + dest], { stdio: 'ignore' });
-      cp.on('error', () => resolve(next ? tryBin('magick', null) : false));
-      cp.on('close', code => resolve(code === 0 && fs.existsSync(dest)));
+      const cp = spawn(bin, [orig, '-resize', THUMB_WIDTH + 'x', '-strip', '-quality', String(THUMB_QUALITY), 'jpg:' + dest], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let err = '';
+      cp.stderr.on('data', d => { err += d.toString(); });
+      cp.on('error', e => { console.error('thumb spawn failed', bin, e.message); resolve(next ? tryBin('magick', null) : false); });
+      cp.on('close', code => {
+        if (code !== 0) console.error('thumb convert failed', bin, 'code', code, err.slice(0, 500));
+        resolve(code === 0 && fs.existsSync(dest));
+      });
     };
     tryBin('convert', true);
   });
