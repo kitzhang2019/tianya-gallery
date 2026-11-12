@@ -31,16 +31,6 @@ const GH_BRANCH = 'main';
 const GH_TOKEN = process.env.GITHUB_TOKEN || '';
 const CDN_BASE = 'https://cdn.jsdelivr.net/gh/' + GH_REPO + '@' + GH_BRANCH + '/';
 function cdnUrl(file) { return CDN_BASE + String(file || ''); }
-// 缩略图：列表只加载缩略图（最长边 480px，WebP 质量 80，约 15KB），
-// 点开详情/大图才加载原图。缩略图与原图同名 + -thumb 后缀。
-const THUMB_QUALITY = 80;
-const THUMB_MAX = 480;
-function thumbFileName(file) {
-  const base = path.basename(String(file || ''));
-  const i = base.lastIndexOf('.');
-  return (i > 0 ? base.slice(0, i) : base) + '-thumb.webp';
-}
-function thumbRelPath(file) { return 'images/' + thumbFileName(file); }
 const MAX_ITEMS = 200;
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_FLOW_BYTES = 2 * 1024 * 1024;
@@ -74,8 +64,7 @@ function saveFlows(flows) {
   fs.renameSync(tmp, WORKFLOWS_FILE);
 }
 // WebP：画廊只存 WebP 原图。PNG/JPG 上传后即转 WebP（质量 85），
-// 全尺寸 WebP 约 130KB（同图 PNG 约 3.6MB）。列表加载的是缩略图
-// （最长边 480px，质量 80，约 15KB），点开详情/大图才加载原图。
+// 全尺寸 WebP 约 130KB（同图 PNG 约 3.6MB），列表直接加载原图，不用缩略图。
 // 老图在启动后由 migrateToWebp 一次性转掉。转失败则保留原格式，上传不中断。
 const webpConverting = new Set();
 function isWebpFile(f) {
@@ -109,34 +98,6 @@ function runWebpConvert(src, dest) {
       cp.on('error', e => { console.log('webp spawn failed', bin, e.message); finish(false); });
       cp.on('close', code => {
         if (code !== 0) console.log('webp convert failed', bin, 'code', code, err.slice(0, 300));
-        finish(code === 0 && fs.existsSync(dest) && isWebpFile(dest));
-      });
-    };
-    next();
-  });
-}
-// 生成一张 WebP 缩略图（最长边 480px，质量 80），magick 优先，vips 兜底。
-function makeThumbnail(src, dest) {
-  const attempts = [
-    ['magick', [src, '-resize', THUMB_MAX + 'x' + THUMB_MAX, '-strip', '-quality', String(THUMB_QUALITY), dest]],
-    ['vips', ['thumbnail', src, dest, String(THUMB_MAX), '--height', String(THUMB_MAX)]],
-    ['convert', [src, '-resize', THUMB_MAX + 'x' + THUMB_MAX, '-strip', '-quality', String(THUMB_QUALITY), dest]],
-  ];
-  return new Promise(resolve => {
-    let i = 0;
-    const next = () => {
-      if (i >= attempts.length) return resolve(false);
-      const [bin, args] = attempts[i++];
-      try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch {}
-      const cp = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-      let err = '';
-      let settled = false;
-      const timer = setTimeout(() => { try { cp.kill('SIGKILL'); } catch {} }, 20000);
-      const finish = (ok) => { if (settled) return; settled = true; clearTimeout(timer); if (ok) return resolve(true); next(); };
-      cp.stderr.on('data', d => { err += d.toString(); });
-      cp.on('error', e => { console.log('thumb spawn failed', bin, e.message); finish(false); });
-      cp.on('close', code => {
-        if (code !== 0) console.log('thumb failed', bin, 'code', code, err.slice(0, 300));
         finish(code === 0 && fs.existsSync(dest) && isWebpFile(dest));
       });
     };
@@ -238,27 +199,6 @@ async function migrateToWebp() {
     if (changed) saveItems(items);
   } catch (e) { console.log('webp migrate failed', e && e.message); }
 }
-// 启动后给已有原图补缩略图（后台跑，不挡服务启动，可重复跑）。
-// 缩略图不存在时才生成，生成后同步到 GitHub（jsDelivr 镜像）。
-async function migrateThumbnails() {
-  try {
-    const items = loadItems();
-    for (const it of items) {
-      if (!it.file) continue;
-      const orig = path.join(IMAGE_DIR, path.basename(it.file));
-      if (!fs.existsSync(orig)) continue;
-      const thumb = path.join(IMAGE_DIR, thumbFileName(it.file));
-      if (fs.existsSync(thumb)) continue;
-      const ok = await makeThumbnail(orig, thumb);
-      if (ok) {
-        console.log('thumb made', it.id);
-        if (GH_TOKEN) ghPutImage(thumb);
-      } else {
-        console.log('thumb make failed (migrate)', it.id);
-      }
-    }
-  } catch (e) { console.log('thumb migrate failed', e && e.message); }
-}
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
@@ -316,14 +256,13 @@ function galleryHtml(items, flows) {
   }).join('\n');
   const cards = items.map(function (it, i) {
     const file = esc(it.file || '');
-    const thumb = esc(thumbRelPath(it.file || ''));
     const prompt = esc(it.prompt || '');
     const model = esc(it.model || '');
     const date = esc(String(it.created_at || '').slice(0, 10));
     const title = (it.prompt || '').trim().slice(0, 24) || model || '无标题';
     return '<article class="card" data-idx="' + i + '" data-id="' + esc(it.id || '') + '" data-model="' + model + '">'
       + '<button class="del-btn" data-id="' + esc(it.id || '') + '" aria-label="删除这张图">×</button>'
-      + '<div class="thumb"><img src="' + cdnUrl(thumb) + '" data-thumb-local="' + thumb + '" data-full="' + file + '" onerror="thumbFallback(this)" alt="" loading="lazy"></div>'
+      + '<div class="thumb"><img src="' + cdnUrl(file) + '" onerror="this.onerror=null;this.src=\'' + file + '\'" alt="" loading="lazy"></div>'
       + '<div class="card-t">' + esc(title) + '</div>'
       + '<div class="card-m">' + model + (model && date ? ' · ' : '') + date + '</div></article>';
   }).join('\n');
@@ -1130,7 +1069,7 @@ function galleryHtml(items, flows) {
     + '  @media (max-width: 820px) { .modal { flex-direction: column; overflow: auto; } .m-left { flex: none; min-height: 0; padding: 12px; } .m-left img { max-height: 65vh; max-height: 65dvh; } .m-right { flex: none; max-height: none; overflow-y: visible; padding: 18px 18px calc(20px + env(safe-area-inset-bottom, 0px)); } .m-title { display: none; } .m-meta { display: none; } .m-arrow { display: none; } }\n'
     + '  .full-overlay { position: fixed; inset: 0; z-index: 300; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.95); }\n'
     + '  .full-overlay.open { display: flex; }\n'
-    + '  .full-overlay img { max-width: 100vw; max-height: 100vh; max-height: 100dvh; object-fit: contain; display: block; touch-action: none; will-change: transform; }\n'
+    + '  .full-overlay img { max-width: 100vw; max-height: 100vh; max-height: 100dvh; object-fit: contain; display: block; }\n'
     + '  .full-close { position: fixed; top: 16px; right: 16px; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,.92); color: #1c1917; border: none; font-size: 22px; line-height: 1; cursor: pointer; z-index: 310; box-shadow: 0 4px 16px rgba(0,0,0,.2); }\n'
     + '  .form-overlay { position: fixed; inset: 0; z-index: 120; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(28,25,23,.55); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }\n'
     + '  .form-overlay.open { display: flex; }\n'
@@ -1227,13 +1166,6 @@ function galleryHtml(items, flows) {
     + 'var overlay = document.getElementById("overlay");\n'
     + 'var fullOverlay = document.getElementById("fullOverlay");\n'
     + 'var fullImg = document.getElementById("fullImg");\n'
-    + '// 缩略图加载失败时逐级回退：jsDelivr 缩略图 → 本地缩略图 → 原图（补缩略图期间也能显示）。\n'
-    + 'function thumbFallback(img) {\n'
-    + '  var step = parseInt(img.dataset.fb || "0", 10);\n'
-    + '  if (step === 0) { img.dataset.fb = "1"; img.src = img.dataset.thumbLocal; }\n'
-    + '  else if (step === 1) { img.dataset.fb = "2"; img.src = img.dataset.full; }\n'
-    + '  else { img.onerror = null; }\n'
-    + '}\n'
     + 'function copyText(t, btn, okMsg) {\n'
     + '  function done(msg) { if (!btn) return; var old = btn.textContent; btn.textContent = msg; setTimeout(function () { btn.textContent = old; }, 1500); }\n'
     + '  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(function () { done(okMsg || "已复制 ✓"); }, function () { done("复制失败"); }); }\n'
@@ -1382,90 +1314,11 @@ function galleryHtml(items, flows) {
     + 'function stepDetail(d) { var n = currentList.length; if (!n) return; openDetail((currentIdx + d + n) % n); }\n'
     + 'function openFull() {\n'
     + '  var it = currentList[currentIdx]; if (!it) return;\n'
-    + '  zReset();\n'
     + '  fullImg.onerror = function () { fullImg.onerror = null; fullImg.src = CDN + it.file; };\n'
     + '  fullImg.src = it.file;\n'
     + '  fullOverlay.classList.add("open"); document.body.style.overflow = "hidden";\n'
     + '}\n'
-    + 'function closeFull() { fullOverlay.classList.remove("open"); zReset(); }\n'
-    + '// ---- 大图捏合缩放（手写 Pointer Events，无依赖）----\n'
-    + '// 双指缩放 + 单指拖动平移，双击切换 1x / 2.5x；最小 1x（不小于原尺寸），最大 4x。\n'
-    + 'var zScale = 1, zTx = 0, zTy = 0;\n'
-    + 'var zPtrs = new Map();\n'
-    + 'var zPinch = null;\n'
-    + 'var zPan = null;\n'
-    + 'var zDown = null;\n'
-    + 'var zLastTap = 0;\n'
-    + 'var zTapTimer = null;\n'
-    + 'function zApply() {\n'
-    + '  fullImg.style.transform = "translate(" + zTx + "px," + zTy + "px) scale(" + zScale + ")";\n'
-    + '  fullImg.style.cursor = zScale > 1 ? "grab" : "zoom-in";\n'
-    + '}\n'
-    + 'function zReset() { zScale = 1; zTx = 0; zTy = 0; zPtrs.clear(); zPinch = null; zPan = null; zDown = null; if (zTapTimer) { clearTimeout(zTapTimer); zTapTimer = null; } zApply(); }\n'
-    + 'function zClampPan() {\n'
-    + '  var w = fullImg.offsetWidth || 1, h = fullImg.offsetHeight || 1;\n'
-    + '  var mx = Math.max(0, (w * (zScale - 1)) / 2) + 60;\n'
-    + '  var my = Math.max(0, (h * (zScale - 1)) / 2) + 60;\n'
-    + '  if (zTx > mx) zTx = mx; if (zTx < -mx) zTx = -mx;\n'
-    + '  if (zTy > my) zTy = my; if (zTy < -my) zTy = -my;\n'
-    + '}\n'
-    + 'fullImg.addEventListener("pointerdown", function (e) {\n'
-    + '  try { fullImg.setPointerCapture(e.pointerId); } catch (err) {}\n'
-    + '  zPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });\n'
-    + '  if (zPtrs.size === 2) {\n'
-    + '    var p = Array.from(zPtrs.values());\n'
-    + '    zPinch = { d0: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y), s0: zScale };\n'
-    + '    zPan = null; zDown = null;\n'
-    + '    if (zTapTimer) { clearTimeout(zTapTimer); zTapTimer = null; }\n'
-    + '  } else if (zPtrs.size === 1) {\n'
-    + '    zDown = { x: e.clientX, y: e.clientY, t: Date.now() };\n'
-    + '    if (zScale > 1) zPan = { x0: e.clientX, y0: e.clientY, tx0: zTx, ty0: zTy };\n'
-    + '  }\n'
-    + '});\n'
-    + 'fullImg.addEventListener("pointermove", function (e) {\n'
-    + '  if (!zPtrs.has(e.pointerId)) return;\n'
-    + '  zPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });\n'
-    + '  if (zPtrs.size === 2 && zPinch) {\n'
-    + '    var p = Array.from(zPtrs.values());\n'
-    + '    var d = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);\n'
-    + '    if (zPinch.d0 > 0) {\n'
-    + '      zScale = Math.min(4, Math.max(1, zPinch.s0 * d / zPinch.d0));\n'
-    + '      if (zScale === 1) { zTx = 0; zTy = 0; }\n'
-    + '      zClampPan(); zApply();\n'
-    + '    }\n'
-    + '  } else if (zPtrs.size === 1 && zPan) {\n'
-    + '    zTx = zPan.tx0 + (e.clientX - zPan.x0);\n'
-    + '    zTy = zPan.ty0 + (e.clientY - zPan.y0);\n'
-    + '    zClampPan(); zApply();\n'
-    + '  }\n'
-    + '});\n'
-    + 'function zPointerEnd(e) {\n'
-    + '  var wasTap = false;\n'
-    + '  if (zPtrs.size === 1 && zDown) {\n'
-    + '    var dx = e.clientX - zDown.x, dy = e.clientY - zDown.y;\n'
-    + '    if (Math.hypot(dx, dy) < 10 && Date.now() - zDown.t < 400) wasTap = true;\n'
-    + '  }\n'
-    + '  zPtrs.delete(e.pointerId);\n'
-    + '  if (zPtrs.size < 2) zPinch = null;\n'
-    + '  if (zPtrs.size === 0) { zPan = null; zDown = null; }\n'
-    + '  if (!wasTap) return;\n'
-    + '  var now = Date.now();\n'
-    + '  if (now - zLastTap < 300) {\n'
-    + '    if (zTapTimer) { clearTimeout(zTapTimer); zTapTimer = null; }\n'
-    + '    zLastTap = 0;\n'
-    + '    if (zScale > 1) { zScale = 1; zTx = 0; zTy = 0; } else { zScale = 2.5; zTx = 0; zTy = 0; }\n'
-    + '    zApply();\n'
-    + '  } else {\n'
-    + '    zLastTap = now;\n'
-    + '    zTapTimer = setTimeout(function () {\n'
-    + '      zTapTimer = null;\n'
-    + '      if (zScale > 1) { zScale = 1; zTx = 0; zTy = 0; zApply(); }\n'
-    + '      else closeFull();\n'
-    + '    }, 280);\n'
-    + '  }\n'
-    + '}\n'
-    + 'fullImg.addEventListener("pointerup", zPointerEnd);\n'
-    + 'fullImg.addEventListener("pointercancel", zPointerEnd);\n'
+    + 'function closeFull() { fullOverlay.classList.remove("open"); }\n'
     + 'function cardIndex(card) { return currentList.indexOf(ITEMS[parseInt(card.dataset.idx, 10)]); }\n'
     + 'document.querySelectorAll(".card").forEach(function (card) {\n'
     + '  card.addEventListener("click", function () { var li = cardIndex(card); if (li >= 0) openDetail(li); });\n'
@@ -1477,7 +1330,7 @@ function galleryHtml(items, flows) {
     + 'overlay.addEventListener("click", function (e) { if (e.target === overlay) closeDetail(); });\n'
     + 'document.getElementById("mImg").addEventListener("click", openFull);\n'
     + 'document.getElementById("fullClose").addEventListener("click", closeFull);\n'
-    + 'fullOverlay.addEventListener("click", function (e) { if (e.target === fullOverlay) closeFull(); });\n'
+    + 'fullOverlay.addEventListener("click", function (e) { if (e.target === fullOverlay || e.target === fullImg) closeFull(); });\n'
     + 'document.getElementById("mPrev").addEventListener("click", function () { stepDetail(-1); });\n'
     + 'document.getElementById("mNext").addEventListener("click", function () { stepDetail(1); });\n'
     + 'document.getElementById("mUp").addEventListener("click", function () { stepDetail(-1); });\n'
@@ -1735,9 +1588,7 @@ const server = http.createServer(async (req, res) => {
       if (removed && removed.file) {
         const fp = path.join(IMAGE_DIR, path.basename(removed.file));
         if (fs.existsSync(fp)) fs.unlinkSync(fp);
-        const tp = path.join(IMAGE_DIR, thumbFileName(removed.file));
-        if (fs.existsSync(tp)) fs.unlinkSync(tp);
-        if (GH_TOKEN) { ghDeleteImage(path.basename(removed.file)); ghDeleteImage(thumbFileName(removed.file)); }
+        if (GH_TOKEN) ghDeleteImage(path.basename(removed.file));
       }
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, remaining: items.length });
@@ -1815,10 +1666,6 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(saved, file.data);
       // 收到的 PNG/JPG 即转 WebP 再入库（转失败则保留原格式）
       const finalPath = await convertToWebp(id, saved);
-      // 缩略图：列表加载用，点开详情/大图才加载原图（生成失败也不挡上传）
-      const thumbPath = path.join(IMAGE_DIR, thumbFileName(finalPath));
-      const thumbOk = await makeThumbnail(finalPath, thumbPath);
-      if (!thumbOk) console.log('thumb make failed', id);
       const entry = {
         id, file: 'images/' + path.basename(finalPath),
         prompt: String(fields.prompt || '').trim(),
@@ -1835,14 +1682,12 @@ const server = http.createServer(async (req, res) => {
         if (old && old.file) {
           const fp = path.join(IMAGE_DIR, path.basename(old.file));
           if (fs.existsSync(fp)) fs.unlinkSync(fp);
-          const tp = path.join(IMAGE_DIR, thumbFileName(old.file));
-          if (fs.existsSync(tp)) fs.unlinkSync(tp);
-          if (GH_TOKEN) { ghDeleteImage(path.basename(old.file)); ghDeleteImage(thumbFileName(old.file)); }
+          if (GH_TOKEN) ghDeleteImage(path.basename(old.file));
         }
       }
       saveItems(items);
-      // 同步到 GitHub（jsDelivr 镜像），后台跑，不挡返回（原图 + 缩略图）
-      if (GH_TOKEN) { ghPutImage(finalPath); if (thumbOk) ghPutImage(thumbPath); }
+      // 同步到 GitHub（jsDelivr 镜像），后台跑，不挡返回
+      if (GH_TOKEN) ghPutImage(finalPath);
       return sendJson(res, 200, { ok: true, id, url: entry.file });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
@@ -1856,5 +1701,4 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log('tianya-gallery listening on ' + PORT + ' data=' + DATA_DIR);
   migrateToWebp();
-  migrateThumbnails();
 });
