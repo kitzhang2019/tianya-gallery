@@ -1247,7 +1247,7 @@ function galleryHtml(items, flows) {
     + 'document.querySelectorAll(".tab").forEach(function (t) { t.addEventListener("click", function () { switchTab(t.dataset.tab); }); });\n'
     + 'var themeBtn = document.getElementById("themeBtn");\n'
     + 'var themeMenu = document.getElementById("themeMenu");\n'
-    + 'var THEMES = { light: { icon: "☀️", label: "浅色" }, dark: { icon: "🌙", label: "深色" }, colorful: { icon: "🎨", label: "彩色" }, gemini: { icon: "✦", label: "Gemini" }, gemini-night: { icon: "🌌", label: "Gemini 夜" }, warmorganic: { icon: "🏺", label: "暖感有机" }, warmorganic-night: { icon: "🏮", label: "暖感有机 夜" }, scandinavian: { icon: "🌿", label: "北欧极简" }, scandinavian-night: { icon: "🌲", label: "北欧极简 夜" }, wabisabi: { icon: "🍵", label: "侘寂" }, wabisabi-night: { icon: "🎑", label: "侘寂 夜" }, system: { icon: "🖥️", label: "跟随系统" } };\n'
+    + 'var THEMES = { light: { icon: "☀️", label: "浅色" }, dark: { icon: "🌙", label: "深色" }, colorful: { icon: "🎨", label: "彩色" }, gemini: { icon: "✦", label: "Gemini" }, "gemini-night": { icon: "🌌", label: "Gemini 夜" }, warmorganic: { icon: "🏺", label: "暖感有机" }, "warmorganic-night": { icon: "🏮", label: "暖感有机 夜" }, scandinavian: { icon: "🌿", label: "北欧极简" }, "scandinavian-night": { icon: "🌲", label: "北欧极简 夜" }, wabisabi: { icon: "🍵", label: "侘寂" }, "wabisabi-night": { icon: "🎑", label: "侘寂 夜" }, system: { icon: "🖥️", label: "跟随系统" } };\n'
     + 'var currentTheme = "light";\n'
     + 'function resolveTheme(name) {\n'
     + '  if (name === "system") { try { return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; } catch (e) { return "light"; } }\n'
