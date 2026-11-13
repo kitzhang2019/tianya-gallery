@@ -2,7 +2,7 @@
 // 版面复刻 https://shisei.indaloop.app/costume/：暖米白底、胶囊筛选、6 列卡片、
 // 点图开二级详情弹窗（背景一级页面模糊），顶部四板块：提示词 / 图片 / 工作流分享 / 管理。
 // 推送协议与免费主机 PHP 版一致，管理站只需改推送地址域名：
-//   POST /upload.php  multipart，字段 key / image / prompt / model / seed / width / height / created_at
+//   POST /upload.php  multipart，字段 key / image / prompt / model / seed / width / height / created_at / steps / cfg / lora / text_encoder / vae
 //   成功返回 {"ok":true,"id":"...","url":"images/..."}，密钥错返回 403。
 // 密钥只从环境变量 SHOWCASE_KEY 读，不写进代码和仓库。
 // 图片与索引存在 DATA_DIR（Cloady 上挂持久卷，如 /data），默认 ./data。
@@ -246,6 +246,31 @@ const BUILTIN_FLOWS = [
   { name: 'Krea2 Turbo · 文生图', model: 'Krea2', tag: '站长实测', desc: '12.9B，GGUF Q5_K_M 量化，Turbo 8 步蒸馏。', params: 'Krea2 Turbo GGUF Q5_K_M，8 步，CFG 1，euler / simple，1024×1024，采样约 120 秒，Kaggle T4 x2 免费跑通。' },
 ];
 
+// 各模型固定参数（管理站笔记本模板实测值；图片未带 steps/cfg 等字段时按模型名查表兜底）
+const MODEL_PARAMS = {
+  moss: { checkpoint: 'Moody Moss Mix V3.3', steps: 25, cfg: '3.5', textEncoder: 'Qwen3.5-9B w4a8', vae: 'FLUX.2 small' },
+  qwen: { checkpoint: 'Qwen Image 2.1 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 8B int8', vae: 'Qwen Image 2.1 VAE' },
+  krea: { checkpoint: 'Krea2 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 4B fp8', vae: 'Qwen Image VAE' },
+  zimage: { checkpoint: 'Z-Image Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-4B FP8', vae: 'Flux VAE' },
+};
+function modelParams(model) {
+  const m = String(model || '').toLowerCase();
+  if (!m) return null;
+  if (m.indexOf('moss') >= 0) return MODEL_PARAMS.moss;
+  if (m.indexOf('qwen') >= 0) return MODEL_PARAMS.qwen;
+  if (m.indexOf('krea') >= 0) return MODEL_PARAMS.krea;
+  if (m.indexOf('z-image') >= 0 || m.indexOf('zimage') >= 0) return MODEL_PARAMS.zimage;
+  return null;
+}
+function gcdServer(a, b) { return b ? gcdServer(b, a % b) : a; }
+function ratioLabelServer(w, h) {
+  if (!w || !h) return '—';
+  const a = w / h;
+  const std = [[1, '1:1'], [16/9, '16:9'], [9/16, '9:16'], [4/3, '4:3'], [3/4, '3:4'], [3/2, '3:2'], [2/3, '2:3'], [2, '2:1'], [0.5, '1:2'], [5/4, '5:4'], [4/5, '4:5'], [21/9, '21:9'], [9/21, '9:21'], [2.39, '2:1'], [1/2.39, '1:2']];
+  for (let i = 0; i < std.length; i++) { if (Math.abs(a - std[i][0]) / std[i][0] < 0.02) return std[i][1]; }
+  const g = gcdServer(w, h); return (w / g) + ':' + (h / g);
+}
+
 function galleryHtml(items, flows) {
   const count = items.length;
   const models = [];
@@ -256,15 +281,18 @@ function galleryHtml(items, flows) {
   }).join('\n');
   const cards = items.map(function (it, i) {
     const file = esc(it.file || '');
-    const prompt = esc(it.prompt || '');
     const model = esc(it.model || '');
-    const date = esc(String(it.created_at || '').slice(0, 10));
-    const title = (it.prompt || '').trim().slice(0, 24) || model || '无标题';
+    const mp = modelParams(it.model);
+    const steps = (it.steps != null && it.steps !== '') ? it.steps : (mp ? mp.steps : null);
+    const ratio = (it.width && it.height) ? ratioLabelServer(it.width, it.height) + ' (' + it.width + '×' + it.height + ')' : '';
+    const samePrompt = items.filter(function (x) { return (x.prompt || '').trim() === (it.prompt || '').trim(); }).length;
+    const cardT = model || '无标题';
+    const cardM = [steps != null ? (steps + '步') : null, ratio || null, samePrompt > 0 ? (samePrompt + '次') : null].filter(Boolean).join(' · ');
     return '<article class="card" data-idx="' + i + '" data-id="' + esc(it.id || '') + '" data-model="' + model + '">'
       + '<button class="del-btn" data-id="' + esc(it.id || '') + '" aria-label="删除这张图">×</button>'
       + '<div class="thumb"><img src="' + cdnUrl(file) + '" onerror="this.onerror=null;this.src=\'' + file + '\'" alt="" loading="lazy"></div>'
-      + '<div class="card-t">' + esc(title) + '</div>'
-      + '<div class="card-m">' + model + (model && date ? ' · ' : '') + date + '</div></article>';
+      + '<div class="card-t">' + esc(cardT) + '</div>'
+      + '<div class="card-m">' + esc(cardM) + '</div></article>';
   }).join('\n');
   const promptCards = items.map(function (it, i) {
     const model = esc(it.model || '');
@@ -1116,6 +1144,9 @@ function galleryHtml(items, flows) {
     + '  .m-round { width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; border: 1px solid #d6d3d1; background: #fff; color: #1c1917; font-size: 17px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }\n'
     + '  .m-rowbtns.m-icons { justify-content: space-between; }\n'
     + '  .m-round:hover { border-color: #1c1917; }\n'
+    + '  .m-arrow.off, .m-round.off { opacity: .35; cursor: default; }\n'
+    + '  .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px); background: rgba(28,25,23,.92); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 13px; line-height: 1.4; opacity: 0; pointer-events: none; transition: opacity .25s ease, transform .25s ease; z-index: 300; max-width: 86vw; text-align: center; }\n'
+    + '  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }\n'
     + '  .m-dl { flex: 1; border: 1px solid #d6d3d1; background: #fff; color: #1c1917; border-radius: 999px; padding: 12px 10px; font-size: 13px; font-weight: 700; cursor: pointer; text-decoration: none; text-align: center; letter-spacing: 1px; }\n'
     + '  .m-dl:hover { border-color: #1c1917; }\n'
     + '  .m-half { flex: 1; border: 1px solid #d6d3d1; background: #fff; color: #1c1917; border-radius: 999px; padding: 11px 10px; font-size: 13px; font-weight: 600; cursor: pointer; letter-spacing: 1px; }\n'
@@ -1188,13 +1219,14 @@ function galleryHtml(items, flows) {
     + '<div class="overlay" id="overlay"><button class="m-close" id="mClose" aria-label="关闭">×</button>\n'
     + '  <div class="modal"><div class="m-left"><span class="m-pill" id="mPill"></span><img id="mImg" src="" alt=""><button class="m-arrow m-prev" id="mPrev" aria-label="上一张">〈</button><button class="m-arrow m-next" id="mNext" aria-label="下一张">〉</button></div>\n'
     + '  <div class="m-right"><div class="m-meta" id="mMeta"></div><div class="m-title" id="mTitle"></div>\n'
-    + '    <div class="m-rows"><div class="m-row"><span class="k">模型</span><span class="v" id="mModel"></span></div><div class="m-row"><span class="k">尺寸</span><span class="v" id="mSize"></span></div><div class="m-row"><span class="k">生成次数</span><span class="v" id="mCount"></span></div></div>\n'
+    + '    <div class="m-rows"><div class="m-row"><span class="k">主模型</span><span class="v" id="mModel"></span></div><div class="m-row"><span class="k">LoRA</span><span class="v" id="mLora"></span></div><div class="m-row"><span class="k">步数</span><span class="v" id="mSteps"></span></div><div class="m-row"><span class="k">CFG</span><span class="v" id="mCfg"></span></div><div class="m-row"><span class="k">文本编码</span><span class="v" id="mTextEnc"></span></div><div class="m-row"><span class="k">VAE</span><span class="v" id="mVae"></span></div><div class="m-row"><span class="k">尺寸</span><span class="v" id="mSize"></span></div><div class="m-row"><span class="k">生成次数</span><span class="v" id="mCount"></span></div></div>\n'
     + '    <div class="m-rowbtns m-icons"><button class="m-round" id="mCopy" title="复制提示词">⧉</button><a class="m-round" id="mDownload" href="" download title="下载原图">⭳</a><button class="m-round" id="mShare" title="分享">↗</button><button class="m-round" id="mUp" title="上一张">↑</button><button class="m-round" id="mDown" title="下一张">↓</button></div>\n'
     + '    <div class="m-rowbtns"><button class="m-half danger" id="mDelete">删除这张图</button></div>\n'
     + '    <div class="m-desc"><div class="m-desc-head"><span>提示词，可直接放进生图</span><button id="mCopy2">复制</button></div><div class="m-desc-body" id="mPrompt"></div></div>\n'
     + '    <div class="m-hint">← → 换一张&nbsp;&nbsp;↑ ↓ 换一张&nbsp;&nbsp;Esc 关闭</div>\n'
     + '  </div></div></div>\n'
     + '<div class="full-overlay" id="fullOverlay"><button class="full-close" id="fullClose" aria-label="关闭">×</button><img id="fullImg" src="" alt=""></div>\n'
+    + '<div class="toast" id="toast"></div>\n'
     + '<div class="overlay" id="promptModal"><button class="m-close" id="pCloseX" aria-label="关闭">×</button>\n'
     + '  <div class="modal" style="max-width: 760px;"><div class="m-right" style="flex: 1; max-height: 92vh; max-height: 92dvh;">\n'
     + '  <div class="m-meta" id="pMeta"></div><div class="m-title" id="pTitle"></div>\n'
@@ -1223,6 +1255,8 @@ function galleryHtml(items, flows) {
     + '</div></div>\n'
     + '<script>\n'
     + 'var ITEMS = ' + itemsJson + ';\n'
+    + 'var MODEL_PARAMS = ' + JSON.stringify(MODEL_PARAMS) + ';\n'
+    + 'function modelParams(m) { m = String(m || "").toLowerCase(); if (!m) return null; if (m.indexOf("moss") >= 0) return MODEL_PARAMS.moss; if (m.indexOf("qwen") >= 0) return MODEL_PARAMS.qwen; if (m.indexOf("krea") >= 0) return MODEL_PARAMS.krea; if (m.indexOf("z-image") >= 0 || m.indexOf("zimage") >= 0) return MODEL_PARAMS.zimage; return null; }\n'
     + 'var CDN = "' + CDN_BASE + '";\n'
     + 'var currentList = ITEMS.slice();\n'
     + 'var currentIdx = 0;\n'
@@ -1358,14 +1392,23 @@ function galleryHtml(items, flows) {
     + 'function openDetail(listIdx) {\n'
     + '  var it = currentList[listIdx]; if (!it) return;\n'
     + '  currentIdx = listIdx;\n'
+    + '  document.getElementById("mPrev").classList.toggle("off", listIdx <= 0);\n'
+    + '  document.getElementById("mUp").classList.toggle("off", listIdx <= 0);\n'
+    + '  document.getElementById("mNext").classList.toggle("off", listIdx >= currentList.length - 1);\n'
+    + '  document.getElementById("mDown").classList.toggle("off", listIdx >= currentList.length - 1);\n'
     + '  var mImg = document.getElementById("mImg");\n'
     + '  mImg.onerror = function () { mImg.onerror = null; mImg.src = it.file; };\n'
     + '  mImg.src = CDN + it.file;\n'
     + '  document.getElementById("mPill").textContent = (listIdx + 1) + " / " + currentList.length;\n'
     + '  document.getElementById("mMeta").textContent = (it.model || "") + " · " + String(it.created_at || "").slice(0, 10) + " · " + (listIdx + 1) + "/" + currentList.length;\n'
-    + '  var title = (it.prompt || "").trim().slice(0, 24) || it.model || "无标题";\n'
-    + '  document.getElementById("mTitle").textContent = title;\n'
-    + '  document.getElementById("mModel").textContent = it.model || "—";\n'
+    + '  var mp = modelParams(it.model);\n'
+    + '  document.getElementById("mTitle").textContent = it.model || "无标题";\n'
+    + '  document.getElementById("mModel").textContent = (mp && mp.checkpoint) || it.model || "—";\n'
+    + '  document.getElementById("mLora").textContent = it.lora ? it.lora : "无";\n'
+    + '  document.getElementById("mSteps").textContent = (it.steps != null && it.steps !== "") ? it.steps : (mp ? mp.steps : "—");\n'
+    + '  document.getElementById("mCfg").textContent = (it.cfg != null && it.cfg !== "") ? it.cfg : (mp ? mp.cfg : "—");\n'
+    + '  document.getElementById("mTextEnc").textContent = it.text_encoder || (mp ? mp.textEncoder : "—");\n'
+    + '  document.getElementById("mVae").textContent = it.vae || (mp ? mp.vae : "—");\n'
     + '  document.getElementById("mSize").textContent = (it.width && it.height) ? (ratioLabel(it.width, it.height) + " (" + it.width + " × " + it.height + ")") : "—";\n'
     + '  var samePrompt = 0; ITEMS.forEach(function (x) { if ((x.prompt || "").trim() === (it.prompt || "").trim()) samePrompt++; });\n'
     + '  document.getElementById("mCount").textContent = samePrompt > 0 ? (samePrompt + " 次") : "—";\n'
@@ -1375,7 +1418,9 @@ function galleryHtml(items, flows) {
     + '  try { history.replaceState(null, "", "#" + it.id); } catch (e) {}\n'
     + '}\n'
     + 'function closeDetail() { overlay.classList.remove("open"); fullOverlay.classList.remove("open"); document.body.style.overflow = ""; try { history.replaceState(null, "", location.pathname); } catch (e) {} }\n'
-    + 'function stepDetail(d) { var n = currentList.length; if (!n) return; openDetail((currentIdx + d + n) % n); }\n'
+    + 'function stepDetail(d) { var n = currentList.length; if (!n) return; var next = currentIdx + d; if (next < 0) { showToast("这是第一张，还没有新的图像生成"); return; } if (next >= n) { showToast("这是最后一张，后面没有了"); return; } openDetail(next); }\n'
+    + 'var toastTimer = null;\n'
+    + 'function showToast(msg) { var t = document.getElementById("toast"); if (!t) return; t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove("show"); }, 2200); }\n'
     + 'function openFull() {\n'
     + '  var it = currentList[currentIdx]; if (!it) return;\n'
     + '  fullImg.onerror = function () { fullImg.onerror = null; fullImg.src = CDN + it.file; };\n'
@@ -1735,6 +1780,11 @@ const server = http.createServer(async (req, res) => {
         prompt: String(fields.prompt || '').trim(),
         model: String(fields.model || '').trim(),
         seed: String(fields.seed || '').trim(),
+        steps: parseInt(fields.steps || '0', 10) || undefined,
+        cfg: String(fields.cfg || '').trim() || undefined,
+        lora: String(fields.lora || '').trim() || undefined,
+        text_encoder: String(fields.text_encoder || '').trim() || undefined,
+        vae: String(fields.vae || '').trim() || undefined,
         width: parseInt(fields.width || '0', 10) || undefined,
         height: parseInt(fields.height || '0', 10) || undefined,
         created_at: String(fields.created_at || '').trim() || new Date().toISOString(),
