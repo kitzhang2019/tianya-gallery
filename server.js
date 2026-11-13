@@ -247,16 +247,24 @@ const BUILTIN_FLOWS = [
 ];
 
 // 各模型固定参数（管理站笔记本模板实测值；图片未带 steps/cfg 等字段时按模型名查表兜底）
+// MOSS 在 2026-11-13 00:30（北京时间）换了主模型：此前用官方 MOSS-Image（CFG 2.5），此后用 Moody Moss Mix V3.3（CFG 3.5）。
+// 画廊按图片生成时间区分，换模型之前跑的图必须标官方模型、CFG 2.5，不能把新模型名字安到旧图上。
+const MOODY_CUTOFF = '2026-11-12T16:30:00Z'; // = 2026-11-13 00:30 北京时间
 const MODEL_PARAMS = {
   moss: { checkpoint: 'Moody Moss Mix V3.3', steps: 25, cfg: '3.5', textEncoder: 'Qwen3.5-9B w4a8', vae: 'FLUX.2 small' },
+  moss_official: { checkpoint: 'MOSS-Image 官方模型', steps: 25, cfg: '2.5', textEncoder: 'Qwen3.5-9B w4a8', vae: 'FLUX.2 small' },
   qwen: { checkpoint: 'Qwen Image 2.1 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 8B int8', vae: 'Qwen Image 2.1 VAE' },
   krea: { checkpoint: 'Krea2 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 4B fp8', vae: 'Qwen Image VAE' },
   zimage: { checkpoint: 'Z-Image Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-4B FP8', vae: 'Flux VAE' },
 };
-function modelParams(model) {
+function modelParams(model, createdAt) {
   const m = String(model || '').toLowerCase();
   if (!m) return null;
-  if (m.indexOf('moss') >= 0) return MODEL_PARAMS.moss;
+  if (m.indexOf('moss') >= 0) {
+    const t = String(createdAt || '');
+    if (t && t < MOODY_CUTOFF) return MODEL_PARAMS.moss_official;
+    return MODEL_PARAMS.moss;
+  }
   if (m.indexOf('qwen') >= 0) return MODEL_PARAMS.qwen;
   if (m.indexOf('krea') >= 0) return MODEL_PARAMS.krea;
   if (m.indexOf('z-image') >= 0 || m.indexOf('zimage') >= 0) return MODEL_PARAMS.zimage;
@@ -282,7 +290,7 @@ function galleryHtml(items, flows) {
   const cards = items.map(function (it, i) {
     const file = esc(it.file || '');
     const model = esc(it.model || '');
-    const mp = modelParams(it.model);
+    const mp = modelParams(it.model, it.created_at);
     const steps = (it.steps != null && it.steps !== '') ? it.steps : (mp ? mp.steps : null);
     const ratio = (it.width && it.height) ? ratioLabelServer(it.width, it.height) + ' (' + it.width + '×' + it.height + ')' : '';
     const samePrompt = items.filter(function (x) { return (x.prompt || '').trim() === (it.prompt || '').trim(); }).length;
@@ -1256,7 +1264,8 @@ function galleryHtml(items, flows) {
     + '<script>\n'
     + 'var ITEMS = ' + itemsJson + ';\n'
     + 'var MODEL_PARAMS = ' + JSON.stringify(MODEL_PARAMS) + ';\n'
-    + 'function modelParams(m) { m = String(m || "").toLowerCase(); if (!m) return null; if (m.indexOf("moss") >= 0) return MODEL_PARAMS.moss; if (m.indexOf("qwen") >= 0) return MODEL_PARAMS.qwen; if (m.indexOf("krea") >= 0) return MODEL_PARAMS.krea; if (m.indexOf("z-image") >= 0 || m.indexOf("zimage") >= 0) return MODEL_PARAMS.zimage; return null; }\n'
+    + 'var MOODY_CUTOFF = ' + JSON.stringify(MOODY_CUTOFF) + ';\n'
+    + 'function modelParams(m, createdAt) { m = String(m || "").toLowerCase(); if (!m) return null; if (m.indexOf("moss") >= 0) { var t = String(createdAt || ""); if (t && t < MOODY_CUTOFF) return MODEL_PARAMS.moss_official; return MODEL_PARAMS.moss; } if (m.indexOf("qwen") >= 0) return MODEL_PARAMS.qwen; if (m.indexOf("krea") >= 0) return MODEL_PARAMS.krea; if (m.indexOf("z-image") >= 0 || m.indexOf("zimage") >= 0) return MODEL_PARAMS.zimage; return null; }\n'
     + 'var CDN = "' + CDN_BASE + '";\n'
     + 'var currentList = ITEMS.slice();\n'
     + 'var currentIdx = 0;\n'
@@ -1401,7 +1410,7 @@ function galleryHtml(items, flows) {
     + '  mImg.src = CDN + it.file;\n'
     + '  document.getElementById("mPill").textContent = (listIdx + 1) + " / " + currentList.length;\n'
     + '  document.getElementById("mMeta").textContent = (it.model || "") + " · " + String(it.created_at || "").slice(0, 10) + " · " + (listIdx + 1) + "/" + currentList.length;\n'
-    + '  var mp = modelParams(it.model);\n'
+    + '  var mp = modelParams(it.model, it.created_at);\n'
     + '  document.getElementById("mTitle").textContent = it.model || "无标题";\n'
     + '  document.getElementById("mModel").textContent = (mp && mp.checkpoint) || it.model || "—";\n'
     + '  document.getElementById("mLora").textContent = it.lora ? it.lora : "无";\n'
