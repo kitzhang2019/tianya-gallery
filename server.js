@@ -843,7 +843,7 @@ function galleryHtml(items, flows) {
     + '  body[data-theme="nebula"] .cap.on::after { background: #a5b4fc; } \n'
     + '  body[data-theme="nebula"] .cap.on span { color: #9aa0b8; } \n'
     + '  body[data-theme="nebula"] .filters .fcount { color: #6b7086; } \n'
-    + '  body[data-theme="nebula"] .card .thumb { background: #141f33; border: 1px solid rgba(255,255,255,0.10); } \n'
+    + '  body[data-theme="nebula"] .card .thumb { background: transparent; border: none; border-radius: 12px; box-shadow: 0 10px 36px rgba(0,0,0,0.45); } \n'
     + '  body[data-theme="nebula"] .card-t { color: #9aa0b8; } \n'
     + '  body[data-theme="nebula"] .card:hover .card-t { color: #e8eaf6; } \n'
     + '  body[data-theme="nebula"] .card-m { color: #6b7086; } \n'
