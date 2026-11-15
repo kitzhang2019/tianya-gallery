@@ -41,10 +41,21 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(GALLERY_FILE)) fs.writeFileSync(GALLERY_FILE, '[]');
 if (!fs.existsSync(WORKFLOWS_FILE)) fs.writeFileSync(WORKFLOWS_FILE, '[]');
 
+// 在管理站开始推送 lora 字段之前推的图，数据里没有 lora 字段；这里按图片 ID 补上已核实的值。
+// #74（MOSS，2026-11-15 10:14）用了观澜 LoRA 0.8；#73（观澜 1.0）已被用户从画廊删掉，不用补。
+// 新推的图自带 lora 字段，不走这张表。不要按时间推断——#69 同是 MOSS 且没挂 LoRA。
+const LORA_OVERRIDES = {
+  '20261115021506-5ec0908a': '观澜 LoRA 0.8',
+};
 function loadItems() {
   try {
     const d = JSON.parse(fs.readFileSync(GALLERY_FILE, 'utf8'));
-    return Array.isArray(d) ? d : [];
+    if (!Array.isArray(d)) return [];
+    // 给推送 lora 字段之前的老图补上已核实的 LoRA（只补缺失的，不改已有值）。
+    for (const it of d) {
+      if (it && !it.lora && LORA_OVERRIDES[it.id]) it.lora = LORA_OVERRIDES[it.id];
+    }
+    return d;
   } catch { return []; }
 }
 function saveItems(items) {
