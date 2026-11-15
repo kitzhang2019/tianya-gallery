@@ -47,6 +47,22 @@ if (!fs.existsSync(WORKFLOWS_FILE)) fs.writeFileSync(WORKFLOWS_FILE, '[]');
 const LORA_OVERRIDES = {
   '20261115021506-5ec0908a': '观澜 LoRA 0.8',
 };
+// 超分回退分界线：2026-11-15T00:00:00Z（= 2026-11-15 08:00 北京时间）。
+// 管理站开始推送 upscaler 字段之前，分界线之后生成的图都走了 SeedVR 7B 放大（出图 2048×3072），
+// 分界线之前还是底图直出。线上 34 条已按尺寸逐条核实，无反例。
+const UPSCALER_CUTOFF = '2026-11-15T00:00:00Z';
+function parseCreatedAtMs(t) {
+  const s = String(t || '').trim();
+  if (!s) return NaN;
+  // 容错空格格式 "2026-11-11 20:08:26"：先把空格换成 T，无时区后缀时按 UTC 解析。
+  const iso = s.replace(' ', 'T');
+  const withTz = /Z$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z';
+  return new Date(withTz).getTime();
+}
+function upscalerFallback(createdAt) {
+  const ms = parseCreatedAtMs(createdAt);
+  return (!Number.isNaN(ms) && ms >= Date.parse(UPSCALER_CUTOFF)) ? 'SeedVR 7B' : '无';
+}
 function loadItems() {
   try {
     const d = JSON.parse(fs.readFileSync(GALLERY_FILE, 'utf8'));
@@ -54,6 +70,10 @@ function loadItems() {
     // 给推送 lora 字段之前的老图补上已核实的 LoRA（只补缺失的，不改已有值）。
     for (const it of d) {
       if (it && !it.lora && LORA_OVERRIDES[it.id]) it.lora = LORA_OVERRIDES[it.id];
+    }
+    // 给推送 upscaler 字段之前的老图按生成时间回退超分（只补缺失的，不改已有值）。
+    for (const it of d) {
+      if (it && !it.upscaler) it.upscaler = upscalerFallback(it.created_at);
     }
     return d;
   } catch { return []; }
@@ -1260,7 +1280,7 @@ function galleryHtml(items, flows) {
     + '<div class="overlay" id="overlay"><button class="m-close" id="mClose" aria-label="关闭">×</button>\n'
     + '  <div class="modal"><div class="m-left"><span class="m-pill" id="mPill"></span><img id="mImg" src="" alt=""><button class="m-arrow m-prev" id="mPrev" aria-label="上一张">〈</button><button class="m-arrow m-next" id="mNext" aria-label="下一张">〉</button></div>\n'
     + '  <div class="m-right"><div class="m-meta" id="mMeta"></div><div class="m-title" id="mTitle"></div>\n'
-    + '    <div class="m-rows"><div class="m-row"><span class="k">主模型</span><span class="v" id="mModel"></span></div><div class="m-row"><span class="k">LoRA</span><span class="v" id="mLora"></span></div><div class="m-row"><span class="k">步数</span><span class="v" id="mSteps"></span></div><div class="m-row"><span class="k">CFG</span><span class="v" id="mCfg"></span></div><div class="m-row"><span class="k">文本编码</span><span class="v" id="mTextEnc"></span></div><div class="m-row"><span class="k">VAE</span><span class="v" id="mVae"></span></div><div class="m-row"><span class="k">尺寸</span><span class="v" id="mSize"></span></div><div class="m-row"><span class="k">生成次数</span><span class="v" id="mCount"></span></div></div>\n'
+    + '    <div class="m-rows"><div class="m-row"><span class="k">主模型</span><span class="v" id="mModel"></span></div><div class="m-row"><span class="k">LoRA</span><span class="v" id="mLora"></span></div><div class="m-row"><span class="k">步数</span><span class="v" id="mSteps"></span></div><div class="m-row"><span class="k">CFG</span><span class="v" id="mCfg"></span></div><div class="m-row"><span class="k">文本编码</span><span class="v" id="mTextEnc"></span></div><div class="m-row"><span class="k">VAE</span><span class="v" id="mVae"></span></div><div class="m-row"><span class="k">超分</span><span class="v" id="mUpscaler"></span></div><div class="m-row"><span class="k">尺寸</span><span class="v" id="mSize"></span></div><div class="m-row"><span class="k">生成次数</span><span class="v" id="mCount"></span></div></div>\n'
     + '    <div class="m-rowbtns m-icons"><button class="m-round" id="mCopy" title="复制提示词">⧉</button><a class="m-round" id="mDownload" href="" download title="下载原图">⭳</a><button class="m-round" id="mShare" title="分享">↗</button><button class="m-round" id="mUp" title="上一张">↑</button><button class="m-round" id="mDown" title="下一张">↓</button></div>\n'
     + '    <div class="m-rowbtns"><button class="m-half danger" id="mDelete">删除这张图</button></div>\n'
     + '    <div class="m-desc"><div class="m-desc-head"><span>提示词，可直接放进生图</span><button id="mCopy2">复制</button></div><div class="m-desc-body" id="mPrompt"></div></div>\n'
@@ -1301,6 +1321,8 @@ function galleryHtml(items, flows) {
     + 'var PORNMASTER_CUTOFF = ' + JSON.stringify(PORNMASTER_CUTOFF) + ';\n'
     + 'var RAY_CUTOFF = ' + JSON.stringify(RAY_CUTOFF) + ';\n'
     + 'var QWEN_FULL_CUTOFF = ' + JSON.stringify(QWEN_FULL_CUTOFF) + ';\n'
+    + 'var UPSCALER_CUTOFF = ' + JSON.stringify(UPSCALER_CUTOFF) + ';\n'
+    + 'function upscalerLabel(it) { if (it && it.upscaler) return it.upscaler; var s = String((it && it.created_at) || "").trim().replace(" ", "T"); if (!s) return "无"; if (!/Z$|[+-]\\d{2}:?\\d{2}$/.test(s)) s += "Z"; var ms = new Date(s).getTime(); return (!isNaN(ms) && ms >= Date.parse(UPSCALER_CUTOFF)) ? "SeedVR 7B" : "无"; }\n'
     + 'function modelParams(m, createdAt) { m = String(m || "").toLowerCase(); if (!m) return null; if (m.indexOf("moss") >= 0) { var t = String(createdAt || ""); if (t && t < MOODY_CUTOFF) return MODEL_PARAMS.moss_official; return MODEL_PARAMS.moss; } if (m.indexOf("qwen") >= 0) { var t = String(createdAt || ""); if (t && t < QWEN_FULL_CUTOFF) return MODEL_PARAMS.qwen_turbo; return MODEL_PARAMS.qwen; } if (m.indexOf("krea") >= 0) { var t = String(createdAt || ""); if (t && t < RAY_CUTOFF) return MODEL_PARAMS.krea_official; return MODEL_PARAMS.krea; } if (m.indexOf("z-image") >= 0 || m.indexOf("zimage") >= 0) { var t = String(createdAt || ""); if (t && t < PORNMASTER_CUTOFF) return MODEL_PARAMS.zimage_official; return MODEL_PARAMS.zimage; } return null; }\n'
     + 'var CDN = "' + CDN_BASE + '";\n'
     + 'var currentList = ITEMS.slice();\n'
@@ -1454,6 +1476,7 @@ function galleryHtml(items, flows) {
     + '  document.getElementById("mCfg").textContent = (it.cfg != null && it.cfg !== "") ? it.cfg : (mp ? mp.cfg : "—");\n'
     + '  document.getElementById("mTextEnc").textContent = it.text_encoder || (mp ? mp.textEncoder : "—");\n'
     + '  document.getElementById("mVae").textContent = it.vae || (mp ? mp.vae : "—");\n'
+    + '  document.getElementById("mUpscaler").textContent = upscalerLabel(it);\n'
     + '  document.getElementById("mSize").textContent = (it.width && it.height) ? (ratioLabel(it.width, it.height) + " (" + it.width + " × " + it.height + ")") : "—";\n'
     + '  var samePrompt = 0; ITEMS.forEach(function (x) { if ((x.prompt || "").trim() === (it.prompt || "").trim()) samePrompt++; });\n'
     + '  document.getElementById("mCount").textContent = samePrompt > 0 ? (samePrompt + " 次") : "—";\n'
@@ -1828,6 +1851,7 @@ const server = http.createServer(async (req, res) => {
         steps: parseInt(fields.steps || '0', 10) || undefined,
         cfg: String(fields.cfg || '').trim() || undefined,
         lora: String(fields.lora || '').trim() || undefined,
+        upscaler: String(fields.upscaler || '').trim() || undefined,
         text_encoder: String(fields.text_encoder || '').trim() || undefined,
         vae: String(fields.vae || '').trim() || undefined,
         width: parseInt(fields.width || '0', 10) || undefined,
