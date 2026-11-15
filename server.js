@@ -242,7 +242,7 @@ function parseMultipart(buf, boundary) {
 // 站长实测的工作流配置（非文件，仅参数卡片，可复制参数文本）
 const BUILTIN_FLOWS = [
   { name: 'MOSS-Image · 文生图', model: 'MOSS-Image', tag: '站长实测', desc: 'OpenMOSS 5B DiT，ComfyUI 原生支持，长提示词不截断。', params: 'MOSS-Image (OpenMOSS 5B DiT)，ComfyUI 原生，25 步，CFG 2.5，默认 1696×2122（768×1024 的 2.2 倍），Kaggle T4 x2 免费跑通。' },
-  { name: 'Qwen Image 2.1 Turbo · 文生图 / 编辑', model: 'Qwen Image 2.1 Turbo', tag: '站长实测', desc: '7B 统一 DiT，生图和编辑同一个模型，原生 2K。', params: 'Qwen Image 2.1 Turbo，8 步，CFG 1，euler，Turbo int8 模型，编辑跟原图分辨率走（resolution 0），Kaggle T4 x2 免费跑通。' },
+  { name: 'Qwen Image 2.1 · 文生图 / 编辑', model: 'Qwen Image 2.1', tag: '站长实测', desc: '7B 统一 DiT，生图和编辑同一个模型，原生 2K。', params: 'Qwen Image 2.1（完整版），25 步，CFG 3，euler/simple，int8 模型，编辑跟原图分辨率走（resolution 0），Kaggle T4 x2 免费跑通。' },
   { name: 'Krea2 Turbo · 文生图', model: 'Krea2', tag: '站长实测', desc: '12.9B，GGUF Q5_K_M 量化，Turbo 8 步蒸馏。', params: 'Krea2 Turbo GGUF Q5_K_M，8 步，CFG 1，euler / simple，1024×1024，采样约 120 秒，Kaggle T4 x2 免费跑通。' },
 ];
 
@@ -256,10 +256,12 @@ const PORNMASTER_CUTOFF = '2026-11-13T13:00:00Z'; // = 2026-11-13 21:00 北京�
 // Krea2 在 2026-11-13 23:00（北京时间）换了主模型：此前用 Krea2 Turbo GGUF Q5_K_M，此后用 Ray Artshoot Krea2 v5 nvfp4（作者 Ray，Civitai 2574319 / 版本 3378023）。
 // 画廊按图片生成时间区分，换模型之前跑的图必须标旧模型，不能把新模型名字安到旧图上。
 const RAY_CUTOFF = '2026-11-13T15:00:00Z'; // = 2026-11-13 23:00 北京时间
+const QWEN_FULL_CUTOFF = '2026-11-15T02:15:00Z'; // = 2026-11-15 10:15 北京时间，Qwen 由 Turbo 换成完整版
 const MODEL_PARAMS = {
   moss: { checkpoint: 'Moody Moss Mix V3.3', steps: 25, cfg: '3.5', textEncoder: 'Qwen3.5-9B w4a8', vae: 'FLUX.2 small' },
   moss_official: { checkpoint: 'MOSS-Image 官方模型', steps: 25, cfg: '2.5', textEncoder: 'Qwen3.5-9B w4a8', vae: 'FLUX.2 small' },
-  qwen: { checkpoint: 'Qwen Image 2.1 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 8B int8', vae: 'Qwen Image 2.1 VAE' },
+  qwen: { checkpoint: 'Qwen Image 2.1', steps: 25, cfg: '3', textEncoder: 'Qwen3-VL 8B int8', vae: 'Qwen Image 2.1 VAE' },
+  qwen_turbo: { checkpoint: 'Qwen Image 2.1 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 8B int8', vae: 'Qwen Image 2.1 VAE' },
   krea: { checkpoint: 'Ray Artshoot Krea2 v5', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 4B fp8', vae: 'Qwen Image VAE' },
   krea_official: { checkpoint: 'Krea2 Turbo', steps: 8, cfg: '1', textEncoder: 'Qwen3-VL 4B fp8', vae: 'Qwen Image VAE' },
   zimage: { checkpoint: 'PornMaster Z-image Turbo V3.5', steps: 8, cfg: '1', textEncoder: 'Qwen3-4B FP8', vae: 'Flux VAE' },
@@ -273,7 +275,11 @@ function modelParams(model, createdAt) {
     if (t && t < MOODY_CUTOFF) return MODEL_PARAMS.moss_official;
     return MODEL_PARAMS.moss;
   }
-  if (m.indexOf('qwen') >= 0) return MODEL_PARAMS.qwen;
+  if (m.indexOf('qwen') >= 0) {
+    const t = String(createdAt || '');
+    if (t && t < QWEN_FULL_CUTOFF) return MODEL_PARAMS.qwen_turbo;
+    return MODEL_PARAMS.qwen;
+  }
   if (m.indexOf('krea') >= 0) {
     const t = String(createdAt || '');
     if (t && t < RAY_CUTOFF) return MODEL_PARAMS.krea_official;
@@ -1271,7 +1277,7 @@ function galleryHtml(items, flows) {
     + '  </div></div></div>\n'
     + '<div class="form-overlay" id="flowForm"><div class="form-box"><h2>上传工作流</h2>\n'
     + '  <form id="flowUploadForm"><label>工作流名称 *<input type="text" name="name" required maxlength="80" placeholder="例如：Qwen 人像写真工作流"></label>\n'
-    + '  <label>适用模型<select name="model"><option>MOSS-Image</option><option>Qwen Image 2.1 Turbo</option><option>Krea2</option><option>其他</option></select></label>\n'
+    + '  <label>适用模型<select name="model"><option>MOSS-Image</option><option>Qwen Image 2.1</option><option>Krea2</option><option>其他</option></select></label>\n'
     + '  <label>分享者（可选）<input type="text" name="author" maxlength="40" placeholder="留空为匿名"></label>\n'
     + '  <label>介绍（可选）<textarea name="description" maxlength="500" placeholder="简单说说这个工作流适合画什么、有什么特点"></textarea></label>\n'
     + '  <label>工作流文件（.json）*<input type="file" name="workflow" accept=".json,application/json" required><div class="hint">ComfyUI 里导出的工作流 JSON 文件，2MB 以内。上传后任何人都可以下载。</div></label>\n'
@@ -1283,7 +1289,8 @@ function galleryHtml(items, flows) {
     + 'var MOODY_CUTOFF = ' + JSON.stringify(MOODY_CUTOFF) + ';\n'
     + 'var PORNMASTER_CUTOFF = ' + JSON.stringify(PORNMASTER_CUTOFF) + ';\n'
     + 'var RAY_CUTOFF = ' + JSON.stringify(RAY_CUTOFF) + ';\n'
-    + 'function modelParams(m, createdAt) { m = String(m || "").toLowerCase(); if (!m) return null; if (m.indexOf("moss") >= 0) { var t = String(createdAt || ""); if (t && t < MOODY_CUTOFF) return MODEL_PARAMS.moss_official; return MODEL_PARAMS.moss; } if (m.indexOf("qwen") >= 0) return MODEL_PARAMS.qwen; if (m.indexOf("krea") >= 0) { var t = String(createdAt || ""); if (t && t < RAY_CUTOFF) return MODEL_PARAMS.krea_official; return MODEL_PARAMS.krea; } if (m.indexOf("z-image") >= 0 || m.indexOf("zimage") >= 0) { var t = String(createdAt || ""); if (t && t < PORNMASTER_CUTOFF) return MODEL_PARAMS.zimage_official; return MODEL_PARAMS.zimage; } return null; }\n'
+    + 'var QWEN_FULL_CUTOFF = ' + JSON.stringify(QWEN_FULL_CUTOFF) + ';\n'
+    + 'function modelParams(m, createdAt) { m = String(m || "").toLowerCase(); if (!m) return null; if (m.indexOf("moss") >= 0) { var t = String(createdAt || ""); if (t && t < MOODY_CUTOFF) return MODEL_PARAMS.moss_official; return MODEL_PARAMS.moss; } if (m.indexOf("qwen") >= 0) { var t = String(createdAt || ""); if (t && t < QWEN_FULL_CUTOFF) return MODEL_PARAMS.qwen_turbo; return MODEL_PARAMS.qwen; } if (m.indexOf("krea") >= 0) { var t = String(createdAt || ""); if (t && t < RAY_CUTOFF) return MODEL_PARAMS.krea_official; return MODEL_PARAMS.krea; } if (m.indexOf("z-image") >= 0 || m.indexOf("zimage") >= 0) { var t = String(createdAt || ""); if (t && t < PORNMASTER_CUTOFF) return MODEL_PARAMS.zimage_official; return MODEL_PARAMS.zimage; } return null; }\n'
     + 'var CDN = "' + CDN_BASE + '";\n'
     + 'var currentList = ITEMS.slice();\n'
     + 'var currentIdx = 0;\n'
