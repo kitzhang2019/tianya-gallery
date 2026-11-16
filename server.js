@@ -95,7 +95,7 @@ function saveFlows(flows) {
   fs.renameSync(tmp, WORKFLOWS_FILE);
 }
 // WebP：画廊只存 WebP 原图。PNG/JPG 上传后即转 WebP（质量 85），
-// 全尺寸 WebP 约 130KB（同图 PNG 约 3.6MB），列表直接加载原图，不用缩略图。
+// 全尺寸 WebP 约 1.25MB（2560×3840 同图 PNG 约 12MB），列表直接加载原图，不用缩略图。
 // 老图在启动后由 migrateToWebp 一次性转掉。转失败则保留原格式，上传不中断。
 const webpConverting = new Set();
 function isWebpFile(f) {
@@ -272,9 +272,9 @@ function parseMultipart(buf, boundary) {
 
 // 站长实测的工作流配置（非文件，仅参数卡片，可复制参数文本）
 const BUILTIN_FLOWS = [
-  { name: 'MOSS-Image · 文生图', model: 'MOSS-Image', tag: '站长实测', desc: 'OpenMOSS 5B DiT，ComfyUI 原生支持，长提示词不截断。', params: 'MOSS-Image (OpenMOSS 5B DiT)，ComfyUI 原生，25 步，CFG 2.5，默认 1696×2122（768×1024 的 2.2 倍），Kaggle T4 x2 免费跑通。' },
+  { name: 'MOSS-Image · 文生图', model: 'MOSS-Image', tag: '站长实测', desc: 'Moody Moss Mix V3.3（MOSS-Image 微调），ComfyUI 原生支持，长提示词不截断。', params: 'Moody Moss Mix V3.3，25 步，CFG 3.5，默认 2:3 出图 2560×3840（底图 1280×1920），Kaggle T4 x2 免费跑通。' },
   { name: 'Qwen Image 2.1 · 文生图 / 编辑', model: 'Qwen Image 2.1', tag: '站长实测', desc: '7B 统一 DiT，生图和编辑同一个模型，原生 2K。', params: 'Qwen Image 2.1（完整版），25 步，CFG 3，euler/simple，int8 模型，编辑跟原图分辨率走（resolution 0），Kaggle T4 x2 免费跑通。' },
-  { name: 'Krea2 Turbo · 文生图', model: 'Krea2', tag: '站长实测', desc: '12.9B，GGUF Q5_K_M 量化，Turbo 8 步蒸馏。', params: 'Krea2 Turbo GGUF Q5_K_M，8 步，CFG 1，euler / simple，1024×1024，采样约 120 秒，Kaggle T4 x2 免费跑通。' },
+  { name: 'Krea2 Turbo · 文生图', model: 'Krea2', tag: '站长实测', desc: 'Ray Artshoot Krea2 v5 nvfp4，ddim/beta 8 步。', params: 'Ray Artshoot Krea2 v5 nvfp4，8 步，CFG 1，ddim / beta，2:3 出图 2048×3072（底图 1024×1536），Kaggle T4 x2 免费跑通。' },
 ];
 
 // 各模型固定参数（管理站笔记本模板实测值；图片未带 steps/cfg 等字段时按模型名查表兜底）
