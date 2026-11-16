@@ -1696,6 +1696,8 @@ function keyOk(key) {
   const a = Buffer.from(String(key || '')), b = Buffer.from(SHOWCASE_KEY);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+// 密钥也可放在请求头 x-showcase-key 里（供安全库注入调用；不接受 URL 参数，参数会进访问日志）。
+function headerKey(req) { return String(req.headers['x-showcase-key'] || ''); }
 function readJsonBody(req, limit) {
   return readBody(req, limit).then(buf => {
     try { return JSON.parse(buf.toString('utf8') || '{}'); } catch { return null; }
@@ -1748,7 +1750,7 @@ const server = http.createServer(async (req, res) => {
       if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置密钥' });
       const body = await readJsonBody(req, 4096);
       if (!body) return sendJson(res, 400, { ok: false, error: '请求格式不对' });
-      if (!keyOk(body.key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      if (!keyOk(body.key || headerKey(req))) return sendJson(res, 403, { ok: false, error: '密钥不对' });
       return sendJson(res, 200, { ok: true });
     }
     // 管理：删一张图（删文件 + 从索引移除），密钥与推送密钥相同
@@ -1756,7 +1758,7 @@ const server = http.createServer(async (req, res) => {
       if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置密钥' });
       const body = await readJsonBody(req, 4096);
       if (!body) return sendJson(res, 400, { ok: false, error: '请求格式不对' });
-      if (!keyOk(body.key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      if (!keyOk(body.key || headerKey(req))) return sendJson(res, 403, { ok: false, error: '密钥不对' });
       const id = String(body.id || '');
       const items = loadItems();
       const idx = items.findIndex(it => it.id === id);
@@ -1775,7 +1777,7 @@ const server = http.createServer(async (req, res) => {
       if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置密钥' });
       const body = await readJsonBody(req, 4096);
       if (!body) return sendJson(res, 400, { ok: false, error: '请求格式不对' });
-      if (!keyOk(body.key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      if (!keyOk(body.key || headerKey(req))) return sendJson(res, 403, { ok: false, error: '密钥不对' });
       const id = String(body.id || '');
       const flows = loadFlows();
       const idx = flows.findIndex(fl => fl.id === id);
@@ -1830,7 +1832,7 @@ const server = http.createServer(async (req, res) => {
       if (!m) return sendJson(res, 400, { ok: false, error: '需要 multipart 表单' });
       const body = await readBody(req, MAX_BYTES + 1024 * 1024);
       const { fields, file } = parseMultipart(body, (m[1] || m[2]).trim());
-      const key = String(fields.key || '');
+      const key = String(fields.key || headerKey(req) || '');
       if (!keyOk(key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
       if (!file || !file.data || file.data.length === 0) return sendJson(res, 400, { ok: false, error: '没有收到图片文件' });
       if (file.data.length > MAX_BYTES) return sendJson(res, 400, { ok: false, error: '图片大小超出限制' });
