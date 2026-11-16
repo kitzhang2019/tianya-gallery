@@ -32,7 +32,7 @@ const GH_TOKEN = process.env.GITHUB_TOKEN || '';
 const CDN_BASE = 'https://cdn.jsdelivr.net/gh/' + GH_REPO + '@' + GH_BRANCH + '/';
 function cdnUrl(file) { return CDN_BASE + String(file || ''); }
 const MAX_ITEMS = 200;
-const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_BYTES = 20 * 1024 * 1024; // 单张图片上限 20MB（用户规则：生成图 <20MB；2026-11-16 实测：2560×3840 的 PNG 约 12MB，10MB 上限直接拒收回 502）
 const MAX_FLOW_BYTES = 2 * 1024 * 1024;
 
 fs.mkdirSync(IMAGE_DIR, { recursive: true });
