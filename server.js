@@ -94,9 +94,10 @@ function saveFlows(flows) {
   fs.writeFileSync(tmp, JSON.stringify(flows, null, 2));
   fs.renameSync(tmp, WORKFLOWS_FILE);
 }
-// WebP：画廊只存 WebP 原图。PNG/JPG 上传后即转 WebP（质量 85），
-// 全尺寸 WebP 约 1.25MB（2560×3840 同图 PNG 约 12MB），列表直接加载原图，不用缩略图。
-// 老图在启动后由 migrateToWebp 一次性转掉。转失败则保留原格式，上传不中断。
+// 双份存储（用户 2026-11-12 定、2026-11-19 重申）：列表/详情页用 WebP，全屏与下载走 PNG/JPG 原图。
+// 上传的 PNG/JPG 原样保留（orig 字段），另转一份 WebP（质量 85）当 file；上传的已是 WebP 时 orig 留空。
+// 全尺寸 WebP 约 1.25MB（2560×3840 同图 PNG 约 12MB），列表直接加载 WebP，不用缩略图。
+// 老图在启动后由 migrateToWebp 处理：有非 WebP 的 file 时先记为 orig 再转 WebP。转失败则保留原格式，上传不中断。
 const webpConverting = new Set();
 function isWebpFile(f) {
   try {
@@ -135,8 +136,9 @@ function runWebpConvert(src, dest) {
     next();
   });
 }
-// 把一张已存的图片转成 WebP，成功返回新路径并删原文件，失败返回原路径。
-async function convertToWebp(id, srcPath) {
+// 把一张已存的图片转成 WebP，成功返回新路径，失败返回原路径。
+// keepSrc 为真时保留原文件（双份存储：原文件是 orig，不删）；否则成功后删原文件。
+async function convertToWebp(id, srcPath, keepSrc) {
   if (!srcPath || String(srcPath).toLowerCase().endsWith('.webp')) return srcPath;
   if (webpConverting.has(id)) return srcPath;
   webpConverting.add(id);
@@ -144,7 +146,7 @@ async function convertToWebp(id, srcPath) {
     const dest = path.join(IMAGE_DIR, id + '.webp');
     const ok = await runWebpConvert(srcPath, dest);
     if (ok) {
-      try { fs.unlinkSync(srcPath); } catch {}
+      if (!keepSrc) { try { fs.unlinkSync(srcPath); } catch {} }
       return dest;
     }
     return srcPath;
@@ -165,7 +167,7 @@ function ghApi(method, apiPath, body) {
         'Authorization': 'Bearer ' + GH_TOKEN,
         ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}),
       },
-      timeout: 15000,
+      timeout: 120000, // PNG 原图 base64 后约 16MB，15 秒不够，同步失败只记日志、不影响上传
     }, res => {
       let buf = '';
       res.on('data', d => { buf += d; });
@@ -212,7 +214,8 @@ async function ghDeleteImage(name) {
     else console.log('github delete failed', name, del && del.status);
   } catch (e) { console.log('github delete error', e && e.message); }
 }
-// 启动后把老 PNG/JPG 一次性转 WebP（后台跑，不挡服务启动，可重复跑）。
+// 启动后把老 PNG/JPG 处理成双份（后台跑，不挡服务启动，可重复跑）。
+// 有非 WebP 的 file 时先把原文件记为 orig（全屏与下载走原图，原文件保留、不删除），再转 WebP 当 file。
 async function migrateToWebp() {
   try {
     const items = loadItems();
@@ -221,10 +224,11 @@ async function migrateToWebp() {
       if (!it.file || String(it.file).toLowerCase().endsWith('.webp')) continue;
       const src = path.join(IMAGE_DIR, path.basename(it.file));
       if (!fs.existsSync(src)) continue;
-      const out = await convertToWebp(it.id, src);
+      it.orig = 'images/' + path.basename(src);
+      const out = await convertToWebp(it.id, src, true);
       if (out !== src) {
         it.file = 'images/' + path.basename(out); changed = true; console.log('webp migrated', it.id);
-        if (GH_TOKEN) { ghPutImage(out); ghDeleteImage(path.basename(src)); }
+        if (GH_TOKEN) { ghPutImage(out); }
       }
     }
     if (changed) saveItems(items);
@@ -1484,7 +1488,7 @@ function galleryHtml(items, flows) {
     + '  var samePrompt = 0; ITEMS.forEach(function (x) { if ((x.prompt || "").trim() === (it.prompt || "").trim()) samePrompt++; });\n'
     + '  document.getElementById("mCount").textContent = samePrompt > 0 ? (samePrompt + " 次") : "—";\n'
     + '  document.getElementById("mPrompt").textContent = it.prompt || "（无提示词）";\n'
-    + '  document.getElementById("mDownload").href = it.file;\n'
+    + '  document.getElementById("mDownload").href = it.orig || it.file;\n'
     + '  overlay.classList.add("open"); document.body.style.overflow = "hidden";\n'
     + '  try { history.replaceState(null, "", "#" + it.id); } catch (e) {}\n'
     + '}\n'
@@ -1494,8 +1498,9 @@ function galleryHtml(items, flows) {
     + 'function showToast(msg) { var t = document.getElementById("toast"); if (!t) return; t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove("show"); }, 2200); }\n'
     + 'function openFull() {\n'
     + '  var it = currentList[currentIdx]; if (!it) return;\n'
-    + '  fullImg.onerror = function () { fullImg.onerror = null; fullImg.src = CDN + it.file; };\n'
-    + '  fullImg.src = it.file;\n'
+    + '  var fullSrc = it.orig || it.file;\n'
+    + '  fullImg.onerror = function () { fullImg.onerror = null; fullImg.src = CDN + fullSrc; };\n'
+    + '  fullImg.src = fullSrc;\n'
     + '  fullReset();\n'
     + '  fullOverlay.classList.add("open"); document.body.style.overflow = "hidden";\n'
     + '}\n'
@@ -1841,13 +1846,43 @@ const server = http.createServer(async (req, res) => {
       const idx = items.findIndex(it => it.id === id);
       if (idx === -1) return sendJson(res, 404, { ok: false, error: '找不到这张图' });
       const removed = items.splice(idx, 1)[0];
-      if (removed && removed.file) {
-        const fp = path.join(IMAGE_DIR, path.basename(removed.file));
-        if (fs.existsSync(fp)) fs.unlinkSync(fp);
-        if (GH_TOKEN) ghDeleteImage(path.basename(removed.file));
+      if (removed) {
+        for (const f of [removed.file, removed.orig]) {
+          if (!f) continue;
+          const fp = path.join(IMAGE_DIR, path.basename(f));
+          if (fs.existsSync(fp)) fs.unlinkSync(fp);
+          if (GH_TOKEN) ghDeleteImage(path.basename(f));
+        }
       }
       saveItems(items);
       return sendJson(res, 200, { ok: true, id, remaining: items.length });
+    }
+    // 管理：给已有的图补 PNG/JPG 原图（老图从 Kaggle 找回后用）。密钥与推送密钥相同。
+    // multipart 字段 key / id / image；原图存为 images/<id>.<ext>，索引记 orig 字段；已存在时覆盖。
+    if (req.method === 'POST' && p === '/api/attach-orig') {
+      if (!SHOWCASE_KEY) return sendJson(res, 500, { ok: false, error: '服务端未配置推送密钥' });
+      const ct = req.headers['content-type'] || '';
+      const m = ct.match(/boundary=(?:"([^"]+)"|([^;]+))/);
+      if (!m) return sendJson(res, 400, { ok: false, error: '需要 multipart 表单' });
+      const body = await readBody(req, MAX_BYTES + 1024 * 1024);
+      const { fields, file } = parseMultipart(body, (m[1] || m[2]).trim());
+      const key = String(fields.key || headerKey(req) || '');
+      if (!keyOk(key)) return sendJson(res, 403, { ok: false, error: '密钥不对' });
+      const id = String(fields.id || '');
+      const items = loadItems();
+      const it = items.find(x => x.id === id);
+      if (!it) return sendJson(res, 404, { ok: false, error: '找不到这张图' });
+      if (!file || !file.data || file.data.length === 0) return sendJson(res, 400, { ok: false, error: '没有收到图片文件' });
+      if (file.data.length > MAX_BYTES) return sendJson(res, 400, { ok: false, error: '图片大小超出限制' });
+      const det = detectImage(file.data);
+      if (!det) return sendJson(res, 400, { ok: false, error: '不是有效图片，只接受 PNG / JPG / WebP' });
+      const filename = id + '.' + det.ext;
+      const saved = path.join(IMAGE_DIR, filename);
+      fs.writeFileSync(saved, file.data);
+      it.orig = 'images/' + filename;
+      saveItems(items);
+      if (GH_TOKEN) ghPutImage(saved);
+      return sendJson(res, 200, { ok: true, id, orig: it.orig });
     }
     // 管理：删一个已上传的工作流（删文件 + 从索引移除），密钥与推送密钥相同
     if (req.method === 'POST' && p === '/api/workflow/delete') {
@@ -1920,10 +1955,13 @@ const server = http.createServer(async (req, res) => {
       const filename = id + '.' + det.ext;
       const saved = path.join(IMAGE_DIR, filename);
       fs.writeFileSync(saved, file.data);
-      // 收到的 PNG/JPG 即转 WebP 再入库（转失败则保留原格式）
-      const finalPath = await convertToWebp(id, saved);
+      // PNG/JPG：原文件保留为 orig（全屏与下载走原图），另转一份 WebP 当 file；已是 WebP 时 orig 留空。
+      // 转失败则 file 就是原文件，不另记 orig。
+      const isOrig = det.ext !== 'webp';
+      const finalPath = await convertToWebp(id, saved, isOrig);
       const entry = {
         id, file: 'images/' + path.basename(finalPath),
+        ...(isOrig && finalPath !== saved ? { orig: 'images/' + path.basename(saved) } : {}),
         prompt: String(fields.prompt || '').trim(),
         model: String(fields.model || '').trim(),
         seed: String(fields.seed || '').trim(),
@@ -1941,16 +1979,19 @@ const server = http.createServer(async (req, res) => {
       items.unshift(entry);
       while (items.length > MAX_ITEMS) {
         const old = items.pop();
-        if (old && old.file) {
-          const fp = path.join(IMAGE_DIR, path.basename(old.file));
-          if (fs.existsSync(fp)) fs.unlinkSync(fp);
-          if (GH_TOKEN) ghDeleteImage(path.basename(old.file));
+        if (old) {
+          for (const f of [old.file, old.orig]) {
+            if (!f) continue;
+            const fp = path.join(IMAGE_DIR, path.basename(f));
+            if (fs.existsSync(fp)) fs.unlinkSync(fp);
+            if (GH_TOKEN) ghDeleteImage(path.basename(f));
+          }
         }
       }
       saveItems(items);
       // 同步到 GitHub（jsDelivr 镜像），后台跑，不挡返回
-      if (GH_TOKEN) ghPutImage(finalPath);
-      return sendJson(res, 200, { ok: true, id, url: entry.file });
+      if (GH_TOKEN) { ghPutImage(finalPath); if (entry.orig) ghPutImage(path.join(IMAGE_DIR, path.basename(entry.orig))); }
+      return sendJson(res, 200, { ok: true, id, url: entry.file, ...(entry.orig ? { orig: entry.orig } : {}) });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
   } catch (e) {
